@@ -111,9 +111,8 @@ document.addEventListener('touchmove', e => {
 document.addEventListener('touchend', () => {
   if (!isDragging) return;
   isDragging = false;
-  const allSelected = document.querySelectorAll('.sched-cell.selected');
-  if (allSelected.length) {
-    showFloatingDeleteBtn(allSelected[allSelected.length - 1]);
+  if (document.querySelectorAll('.sched-cell.selected').length) {
+    showFloatingDeleteBtn();
   } else {
     hideFloatingDeleteBtn();
   }
@@ -124,43 +123,45 @@ document.addEventListener('touchend', () => {
 
 document.addEventListener('mouseup', () => {
   isDragging = false;
-  // 드래그가 끝났고 선택된 셀이 있으면 플로팅 삭제 버튼 표시
   if (schedSelected.length > 0) {
-    const lastCell = document.querySelector(
-      `.sched-cell.selected:last-of-type`
-    ) || document.querySelector('.sched-cell.selected');
-    // 선택 셀 중 DOM 기준 마지막 셀 찾기
-    const allSelected = document.querySelectorAll('.sched-cell.selected');
-    if (allSelected.length) {
-      showFloatingDeleteBtn(allSelected[allSelected.length - 1]);
-    }
+    showFloatingDeleteBtn();
   } else {
     hideFloatingDeleteBtn();
   }
 });
 
 // ── 플로팅 삭제 버튼 표시/숨김 ──
-function showFloatingDeleteBtn(lastCell) {
+function showFloatingDeleteBtn() {
+  const allSelected = [...document.querySelectorAll('.sched-cell.selected')];
+  if (!allSelected.length) return;
+
   let btn = document.getElementById('floating-clear-btn');
   if (!btn) {
-    btn = document.createElement('div');
+    btn = document.createElement('button');
     btn.id = 'floating-clear-btn';
     btn.className = 'floating-clear-btn';
-    btn.textContent = '🗑 영역 비우기';
+    btn.textContent = '×';
     document.body.appendChild(btn);
   }
   // onclick을 매번 재바인딩해서 stale closure 방지
   btn.onclick = e => {
-    e.stopPropagation(); // 이벤트 버블링으로 인한 hide 충돌 차단
+    e.stopPropagation();
+    e.preventDefault();
     window.clearSelectedCells();
   };
-  // position:fixed — 스크롤과 무관하게 뷰포트 기준 고정
-  const rect = lastCell.getBoundingClientRect();
-  const top  = Math.min(rect.bottom + 6, window.innerHeight - 48);
-  const left = Math.max(4, Math.min(rect.right - 130, window.innerWidth - 140));
-  btn.style.top     = `${top}px`;
-  btn.style.left    = `${left}px`;
-  btn.style.display = 'block';
+
+  // 선택 영역 전체의 바운딩 박스를 구해 우측 상단에 배치
+  let minTop = Infinity, maxRight = -Infinity;
+  allSelected.forEach(cell => {
+    const r = cell.getBoundingClientRect();
+    if (r.top   < minTop)   minTop   = r.top;
+    if (r.right > maxRight) maxRight = r.right;
+  });
+
+  const SIZE = 16; // 버튼 지름(px)
+  btn.style.top     = `${Math.max(4, minTop  - SIZE / 2)}px`;
+  btn.style.left    = `${Math.min(window.innerWidth - SIZE - 4, maxRight - SIZE / 2)}px`;
+  btn.style.display = 'flex';
 }
 
 function hideFloatingDeleteBtn() {

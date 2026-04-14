@@ -960,24 +960,27 @@ body.sidebar-collapsed #main { margin-left: 0; }
   cursor: crosshair;
 }
 
-/* ── 스케쥴러 광역 삭제 플로팅 버튼 ── */
+/* ── 스케쥴러 미니 삭제 버튼 ── */
 .floating-clear-btn {
   position: fixed;
-  display: none;
-  background: #ff4d4d;
+  display: none; /* flex로 전환 시 표시 */
+  align-items: center;
+  justify-content: center;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: rgba(100, 100, 100, 0.70);
   color: #fff;
-  padding: 7px 14px;
-  border-radius: 6px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
+  line-height: 1;
   cursor: pointer;
   z-index: 1000;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-  border: 1px solid #c00;
+  border: none;
+  padding: 0;
   user-select: none;
-  white-space: nowrap;
+  transition: background 0.12s;
 }
-.floating-clear-btn:hover { background: #e03030; }
+.floating-clear-btn:hover { background: rgba(40, 40, 40, 0.90); }
 
 /* ── 스케쥴러 엑셀 팔레트 ── */
 .excel-palette {
