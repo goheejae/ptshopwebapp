@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>핏플랜 스튜디오 통합 관리 시스템</title>
+  <!--
+    style.css — 전체 스타일 (CSS 변수, 레이아웃, 각 기능별 컴포넌트 스타일)
+    js/main.js — 앱 진입점 (라우터, 사이드바, 내보내기/가져오기)
+  -->
+  <link rel="stylesheet" href="./style.css?v=1.0" />
+  <!-- Firebase compat SDK — 반드시 module 스크립트보다 먼저 로드되어야 합니다 -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
+</head>
+<body>
+
+  <!-- 파일 가져오기용 숨김 input (btn-import 클릭 시 트리거됩니다) -->
+  <input type="file" id="file-input" accept=".json" style="display:none" />
+
+  <!-- ── Topbar ── -->
+  <header id="topbar">
+    <button id="toggle-btn" aria-label="메뉴 토글">
+      <span></span><span></span><span></span>
+    </button>
+    <div id="topbar-title">핏플랜 <span>스튜디오</span></div>
+    <div id="topbar-actions">
+      <button class="btn btn-import" id="btn-import">
+        <span>📂</span><span>데이터 가져오기</span>
+      </button>
+      <button class="btn btn-export" id="btn-export">
+        <span>💾</span><span>데이터 내보내기</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 모바일에서 사이드바 열릴 때 뒤를 덮는 오버레이 -->
+  <div id="sidebar-overlay"></div>
+
+  <!-- ── Sidebar ── -->
+  <nav id="sidebar">
+    <div class="sidebar-section-label">메인</div>
+    <button class="nav-item active" data-page="dashboard">
+      <span class="nav-icon">🏠</span> 대시보드
+    </button>
+
+    <button class="nav-item" data-page="notice">
+      <span class="nav-icon">📢</span> 공지사항
+    </button>
+
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section-label">기능</div>
+
+    <button class="nav-item" data-page="scheduler">
+      <span class="nav-icon">📅</span> 주간 스케쥴러
+    </button>
+    <button class="nav-item" data-page="todo">
+      <span class="nav-icon">✅</span> To-do 리스트
+    </button>
+    <button class="nav-item" data-page="finance">
+      <span class="nav-icon">💰</span> 결산 시스템
+    </button>
+    <button class="nav-item" data-page="consult">
+      <span class="nav-icon">📝</span> 상담지 매니저
+    </button>
+    <button class="nav-item" data-page="callLog">
+      <span class="nav-icon">📞</span> 전화 일지
+    </button>
+    <button class="nav-item" data-page="otLog">
+      <span class="nav-icon">🏋️</span> OT 일지
+    </button>
+    <button class="nav-item" data-page="stats">
+      <span class="nav-icon">📊</span> 통계
+    </button>
+  </nav>
+
+  <!-- ── Main Content ── -->
+  <main id="main">
+    <!-- 각 페이지 렌더 함수가 이 요소 안을 채웁니다 -->
+    <div id="page-content"></div>
+  </main>
+
+  <!-- Toast 알림 (showToast()가 이 요소를 사용합니다) -->
+  <div id="toast"></div>
+
+  <!-- type="module" 덕분에 import/export 구문을 사용할 수 있습니다 -->
+  <script type="module" src="./js/main.js?v=1.0"></script>
+
+</body>
+</html>
