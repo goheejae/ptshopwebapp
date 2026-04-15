@@ -1,140 +1,556 @@
 /**
- * js/pages/finance.js — 결산 시스템 페이지
- *
- * 역할: 고희재·이건우의 월간 수입/지출을 기록하고
- *       정산 수식에 따라 각자의 최종 수령액을 자동으로 계산합니다.
+ * js/pages/finance.js — 결산 시스템 페이지 v3
  *
  * 정산 수식:
- *   순수익 = 본인매출 - 공용지출×0.5 - 상대방사비×0.5 + 본인사비×0.5 + 보정액
+ *   수령액 = 본인매출(재등록 제외) + 본인개인지출×0.5 − 상대방개인지출×0.5 − 공용지출합계×0.5
  *
- * 사용법: import { renderFinance } from './pages/finance.js';
+ * 기간 정책:
+ *   2025-11 ~ 2026-03 → 통합 세션 (LEGACY_KEY) — 그 이전 이동 불가
+ *   2026-04~          → 정상 월 단위
+ *
+ * 엑셀 업로드:
+ *   SheetJS(XLSX) 사용 — 입금 열 → 매출, 출금 열 → 공용지출로 자동 분류
+ *   현재 finMonth 경로에 저장 (실제 날짜 무관)
+ *
+ * 렌더링:
+ *   모든 리스트는 항상 날짜 오름차순으로 정렬
  */
 
 import DB from '../db.js';
 import { showToast, escHtml, fmtMoney } from '../utils.js';
 
+// ── Google Vision API 키 ──
+const GOOGLE_VISION_API_KEY = 'AIzaSyBGf8Y7Y_qnRez6PvEIfKuGE0zA8kjoLZA';
+
+// ── 상수 ──
+const LEGACY_KEY   = '2025-11~03';
+const LEGACY_LABEL = '2025년 11월 ~ 2026년 3월 (통합)';
+const FIRST_NORMAL = '2026-04';
+
 // ── 모듈 레벨 상태 ──
+let finMonth        = new Date().toISOString().slice(0, 7);
+let incomeIsRenewal = false;    // 매출 입력 폼 토글
+let feIsAuto        = false;    // 공용지출 폼이 OCR로 채워졌는지
+let fpIsAuto        = false;    // 개인지출 폼이 OCR로 채워졌는지
+let fiIsAuto        = false;    // 매출 폼이 OCR로 채워졌는지
 
-/** 현재 보고 있는 월: 'YYYY-MM' 형식 */
-let finMonth = new Date().toISOString().slice(0, 7);
+if (finMonth < FIRST_NORMAL) finMonth = LEGACY_KEY;
 
-// ════════════════════════════════
-// SettlementManager — 정산 로직 전담 객체
-// ════════════════════════════════
+// ── 월 네비게이션 헬퍼 ──
+function prevMonthKey(cur) {
+  if (cur === FIRST_NORMAL) return LEGACY_KEY;
+  if (cur === LEGACY_KEY)   return null;
+  const d = new Date(cur + '-01');
+  d.setMonth(d.getMonth() - 1);
+  return d.toISOString().slice(0, 7);
+}
+function nextMonthKey(cur) {
+  if (cur === LEGACY_KEY) return FIRST_NORMAL;
+  const d = new Date(cur + '-01');
+  d.setMonth(d.getMonth() + 1);
+  return d.toISOString().slice(0, 7);
+}
+function monthLabel(key) {
+  if (key === LEGACY_KEY) return LEGACY_LABEL;
+  const [y, m] = key.split('-');
+  return `${y}년 ${parseInt(m)}월`;
+}
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function genId()    { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
+/** 날짜 문자열 기준 오름차순 정렬 (복사본 반환) */
+function sortByDate(arr) {
+  return [...arr].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+}
+
 /**
- * 수입/지출 데이터 조작과 정산 계산을 담당합니다.
- * 외부 데이터(엑셀 등)를 추가할 때도 addEntry()만 호출하면 됩니다.
+ * 할부 결제를 월별로 분산하여 각 월의 finance 데이터에 저장합니다.
+ * FIRST_NORMAL(2026-04) 이전 회차는 하나로 합산해 LEGACY_KEY에 저장합니다.
+ *
+ * @param {string} startDate  - 시작 날짜 'YYYY-MM-DD'
+ * @param {number} monthlyAmt - 월 할부 금액 (Math.round(총금액 / 개월수))
+ * @param {number} total      - 총 할부 개월 수
+ * @param {object} base       - 공통 필드 (instructor, name, payMethod, isRenewal, isAuto 등)
  */
-const SettlementManager = {
+function distributeInstallment(startDate, monthlyAmt, total, base) {
+  const groupId = genId();
+  const sd = new Date(startDate);
 
-  /** 현재 월 데이터를 DB에서 가져옵니다. */
-  getMonthData() {
-    return DB.financeGet(finMonth);
+  const items = [];
+  for (let i = 0; i < total; i++) {
+    const d = new Date(sd);
+    d.setMonth(d.getMonth() + i);
+    const y   = d.getFullYear();
+    const mo  = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    items.push({ no: i + 1, monthKey: `${y}-${mo}`, date: `${y}-${mo}-${day}` });
+  }
+
+  // LEGACY: 2026-04 이전 회차는 통합 기간에 합산
+  const legacyItems = items.filter(it => it.monthKey < FIRST_NORMAL);
+  const normalItems = items.filter(it => it.monthKey >= FIRST_NORMAL);
+
+  if (legacyItems.length > 0) {
+    DB.financeAddIncome(LEGACY_KEY, {
+      ...base,
+      date:               legacyItems[0].date,
+      amount:             legacyItems.length * monthlyAmt,
+      isInstallment:      true,
+      installTotal:       total,
+      installLegacyCount: legacyItems.length,
+      installGroupId:     groupId,
+    });
+  }
+
+  normalItems.forEach(item => {
+    DB.financeAddIncome(item.monthKey, {
+      ...base,
+      date:           item.date,
+      amount:         monthlyAmt,
+      isInstallment:  true,
+      installTotal:   total,
+      installNo:      item.no,
+      installGroupId: groupId,
+    });
+  });
+
+  fiIsAuto = false;
+}
+
+/**
+ * 할부 지출을 월별로 분산하여 저장합니다.
+ * 통합 기간(LEGACY_KEY) 이전/내 회차는 하나로 합산합니다.
+ *
+ * @param {string} startDate  - 시작 날짜 'YYYY-MM-DD'
+ * @param {number} monthlyAmt - 월 할부 금액
+ * @param {number} total      - 총 할부 개월 수
+ * @param {object} base       - 공통 필드 (content, payer, isAuto 등)
+ * @param {'shared'|'private'} section
+ */
+function distributeExpenseInstallment(startDate, monthlyAmt, total, base, section) {
+  const groupId = genId();
+  const sd = new Date(startDate);
+  const addFn = section === 'private'
+    ? DB.financeAddPrivateExpense.bind(DB)
+    : DB.financeAddExpense.bind(DB);
+
+  const items = [];
+  for (let i = 0; i < total; i++) {
+    const d   = new Date(sd);
+    d.setMonth(d.getMonth() + i);
+    const y   = d.getFullYear();
+    const mo  = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    items.push({ no: i + 1, monthKey: `${y}-${mo}`, date: `${y}-${mo}-${day}` });
+  }
+
+  const legacyItems = items.filter(it => it.monthKey < FIRST_NORMAL);
+  const normalItems = items.filter(it => it.monthKey >= FIRST_NORMAL);
+
+  if (legacyItems.length > 0) {
+    addFn(LEGACY_KEY, {
+      ...base,
+      date:               legacyItems[0].date,
+      amount:             legacyItems.length * monthlyAmt,
+      isInstallment:      true,
+      installTotal:       total,
+      installLegacyCount: legacyItems.length,
+      installGroupId:     groupId,
+    });
+  }
+
+  normalItems.forEach(item => {
+    addFn(item.monthKey, {
+      ...base,
+      date:           item.date,
+      amount:         monthlyAmt,
+      isInstallment:  true,
+      installTotal:   total,
+      installNo:      item.no,
+      installGroupId: groupId,
+    });
+  });
+}
+
+/**
+ * 같은 installGroupId를 가진 이후 회차(installNo >= fromInstallNo)의
+ * 결제자(payer)를 일괄 변경합니다. (개인지출 한정)
+ */
+function cascadeInstallmentPayer(installGroupId, fromInstallNo, newPayer) {
+  const finance = DB._d.finance || {};
+  Object.keys(finance).forEach(monthKey => {
+    const d = DB.financeGet(monthKey);
+    let changed = false;
+    d.privateExpenses = d.privateExpenses.map(e => {
+      if (e.installGroupId === installGroupId && e.installNo >= fromInstallNo) {
+        changed = true;
+        return { ...e, payer: newPayer };
+      }
+      return e;
+    });
+    if (changed) DB.financeSet(monthKey, d);
+  });
+}
+
+// ════════════════════════════════
+// SettlementManager
+// ════════════════════════════════
+const SM = {
+  get()   { return DB.financeGet(finMonth); },
+  save(d) { DB.financeSet(finMonth, d); },
+
+  addIncome(fields) {
+    const d = this.get();
+    d.incomes.push({ id: genId(), createdAt: new Date().toISOString(), ...fields });
+    this.save(d);
+  },
+  addShared(fields) {
+    const d = this.get();
+    d.expenses.push({ id: genId(), createdAt: new Date().toISOString(), ...fields });
+    this.save(d);
+  },
+  addPrivate(fields) {
+    const d = this.get();
+    d.privateExpenses.push({ id: genId(), createdAt: new Date().toISOString(), ...fields });
+    this.save(d);
   },
 
-  /** 현재 월 데이터를 DB에 저장합니다. */
-  saveMonthData(d) {
-    DB.financeSet(finMonth, d);
+  del(section, id) {
+    const d = this.get();
+    const key = section === 'income' ? 'incomes' : section === 'shared' ? 'expenses' : 'privateExpenses';
+    d[key] = d[key].filter(r => r.id !== id);
+    this.save(d);
   },
 
-  /**
-   * 수입 또는 지출 항목을 추가합니다.
-   * 수동 입력이든 외부 데이터 유입이든 이 메서드를 통합니다.
-   *
-   * @param {'income'|'expense'} type
-   * @param {object} fields - 항목 데이터 (source 미지정 시 'manual'로 자동 설정)
-   * @returns {object} 저장된 레코드
-   */
-  addEntry(type, fields) {
-    const d = this.getMonthData();
-    const record = {
-      id:        Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-      createdAt: new Date().toISOString(),
-      source:    'manual', // 엑셀 업로드 시 'excel' | 'auto' 로 덮어씁니다
-      ...fields,
-    };
-    if (type === 'income')  d.incomes.push(record);
-    if (type === 'expense') d.expenses.push(record);
-    this.saveMonthData(d);
-    return record;
+  update(section, id, patch) {
+    const d = this.get();
+    const key = section === 'income' ? 'incomes' : section === 'shared' ? 'expenses' : 'privateExpenses';
+    const i = d[key].findIndex(r => r.id === id);
+    if (i !== -1) d[key][i] = { ...d[key][i], ...patch };
+    this.save(d);
   },
 
-  /**
-   * 수입 또는 지출 항목을 삭제합니다.
-   * @param {'income'|'expense'} type
-   * @param {string} id
-   */
-  deleteEntry(type, id) {
-    const d = this.getMonthData();
-    if (type === 'income')  d.incomes  = d.incomes.filter(r => r.id !== id);
-    if (type === 'expense') d.expenses = d.expenses.filter(r => r.id !== id);
-    this.saveMonthData(d);
+  calc(inst, data) {
+    const other        = inst === 'ko' ? 'lee' : 'ko';
+    const myIncome     = data.incomes.filter(r => r.instructor === inst && !r.isRenewal).reduce((s, r) => s + r.amount, 0);
+    const renewalAmt   = data.incomes.filter(r => r.instructor === inst &&  r.isRenewal).reduce((s, r) => s + r.amount, 0);
+    const sharedTotal  = data.expenses.reduce((s, r) => s + r.amount, 0);
+    const myPrivate    = data.privateExpenses.filter(r => r.payer === inst).reduce((s, r) => s + r.amount, 0);
+    const otherPrivate = data.privateExpenses.filter(r => r.payer === other).reduce((s, r) => s + r.amount, 0);
+    const final        = myIncome + myPrivate * 0.5 - otherPrivate * 0.5 - sharedTotal * 0.5;
+    const adjObj       = (data.adjustments || {})[inst] || {};
+    const adjAmt       = adjObj.amount || 0;
+    return { myIncome, renewalAmt, sharedTotal, myPrivate, otherPrivate, final,
+             adj: { amount: adjAmt, note: adjObj.note || '' }, adjustedFinal: final + adjAmt };
   },
 
-  /**
-   * 특정 항목을 부분 업데이트합니다 (인라인 편집 저장에 사용).
-   * @param {'income'|'expense'} type
-   * @param {string} id
-   * @param {object} patch
-   */
-  updateEntry(type, id, patch) {
-    const d   = this.getMonthData();
-    const arr = type === 'income' ? d.incomes : d.expenses;
-    const idx = arr.findIndex(r => r.id === id);
-    if (idx !== -1) arr[idx] = { ...arr[idx], ...patch };
-    this.saveMonthData(d);
-  },
-
-  /**
-   * 특정 강사의 최종 정산액을 계산합니다.
-   *
-   * 공식: 순수익 = 본인매출 - 공용지출×0.5 - 상대방사비×0.5 + 본인사비×0.5 + 보정액
-   *
-   * @param {'ko'|'lee'} inst     - 계산할 강사 ID
-   * @param {Array}      incomes  - 해당 월 수입 배열
-   * @param {Array}      expenses - 해당 월 지출 배열
-   * @param {object}     adj      - 보정액 { ko: {amount, reason}, lee: {amount, reason} }
-   * @returns {{ myIncome, sharedExp, otherExp, myExp, adjAmt, base, final }}
-   */
-  calcSettlement(inst, incomes, expenses, adj) {
-    const other = inst === 'ko' ? 'lee' : 'ko';
-
-    const myIncome  = incomes.filter(r => r.instructor === inst).reduce((s, r) => s + r.amount, 0);
-    const sharedExp = expenses.filter(r => r.payer === 'shared').reduce((s, r) => s + r.amount, 0);
-    const otherExp  = expenses.filter(r => r.payer === other).reduce((s, r) => s + r.amount, 0);
-    const myExp     = expenses.filter(r => r.payer === inst).reduce((s, r) => s + r.amount, 0);
-    const adjAmt    = Number(adj[inst]?.amount) || 0;
-    const base      = myIncome - sharedExp * 0.5 - otherExp * 0.5 + myExp * 0.5;
-
-    return { myIncome, sharedExp, otherExp, myExp, adjAmt, base, final: base + adjAmt };
-  },
-
-  /**
-   * 수동 보정액을 저장합니다.
-   * @param {'ko'|'lee'} inst
-   * @param {number}     amount
-   * @param {string}     reason
-   */
-  saveAdjustment(inst, amount, reason) {
-    const d = this.getMonthData();
-    if (!d.adjustments) d.adjustments = { ko: { amount: 0, reason: '' }, lee: { amount: 0, reason: '' } };
-    d.adjustments[inst] = { amount, reason };
-    this.saveMonthData(d);
+  setAdjustment(inst, amount, note) {
+    const d = this.get();
+    if (!d.adjustments) d.adjustments = {};
+    d.adjustments[inst] = { amount, note };
+    this.save(d);
   },
 };
 
 // ════════════════════════════════
-// 메인 렌더 함수
+// 엑셀 파싱 유틸
 // ════════════════════════════════
 
 /**
- * 결산 시스템 페이지를 #page-content에 그립니다.
- * 수입 테이블, 지출 테이블, 결산 리포트를 포함합니다.
+ * 날짜 값을 'YYYY-MM-DD' 문자열로 정규화합니다.
+ * SheetJS cellDates:true 시 Date 객체가 오기도 하고, 문자열로 오기도 합니다.
  */
-export function renderFinance() {
-  const pageContent = document.getElementById('page-content');
+function normalizeDate(raw) {
+  if (!raw) return null;
+  if (raw instanceof Date) {
+    const y = raw.getFullYear();
+    const m = String(raw.getMonth() + 1).padStart(2, '0');
+    const d = String(raw.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  // 점·슬래시를 하이픈으로 통일
+  const s = String(raw).replace(/[./]/g, '-').trim();
+  // YYYYMMDD
+  if (/^\d{8}$/.test(s)) {
+    return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  }
+  // YYYY-MM-DD (또는 YY-MM-DD)
+  const m = s.match(/(\d{2,4})-(\d{1,2})-(\d{1,2})/);
+  if (m) {
+    const y = m[1].length === 2 ? '20' + m[1] : m[1];
+    return `${y}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  }
+  return null;
+}
 
-  pageContent.innerHTML = `
+/** 쉼표·원화 기호 등을 제거하고 정수로 변환 */
+function parseAmount(val) {
+  if (val === '' || val === null || val === undefined) return 0;
+  const n = parseInt(String(val).replace(/[^0-9]/g, ''), 10);
+  return isNaN(n) ? 0 : n;
+}
+
+/**
+ * 헤더 배열에서 키워드와 부분 일치하는 컬럼명을 찾습니다 (공백 무시, 소문자 비교).
+ */
+function findCol(headers, ...keywords) {
+  return headers.find(h =>
+    keywords.some(kw => h.replace(/\s/g, '').toLowerCase().includes(kw.toLowerCase()))
+  ) || null;
+}
+
+/**
+ * 엑셀 파일을 파싱하여 현재 finMonth에 즉시 저장합니다.
+ * 입금 열이 있는 행 → 매출(income)
+ * 출금 열이 있는 행 → 공용지출(shared expense)
+ */
+function handleExcelUpload(file) {
+  if (typeof XLSX === 'undefined') {
+    showToast('⚠️ SheetJS 라이브러리가 로드되지 않았습니다');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const wb   = XLSX.read(e.target.result, { type: 'binary', cellDates: true });
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+      if (!rows.length) { showToast('엑셀에 데이터가 없습니다'); return; }
+
+      const headers    = Object.keys(rows[0]);
+      const dateCol    = findCol(headers, '날짜', '거래일', '일자', 'date');
+      const incomeCol  = findCol(headers, '입금');
+      const expenseCol = findCol(headers, '출금');
+      const descCol    = findCol(headers, '적요', '거래내용', '내용', '메모', 'desc');
+
+      if (!dateCol) {
+        showToast('날짜 컬럼을 찾을 수 없습니다 (날짜 / 거래일 / 일자)');
+        return;
+      }
+      if (!incomeCol && !expenseCol) {
+        showToast('입금·출금 컬럼을 찾을 수 없습니다');
+        return;
+      }
+
+      let cntIncome = 0, cntExpense = 0;
+
+      rows.forEach(row => {
+        const date = normalizeDate(row[dateCol]);
+        if (!date) return;
+
+        if (incomeCol) {
+          const amt = parseAmount(row[incomeCol]);
+          if (amt > 0) {
+            SM.addIncome({
+              date, amount: amt,
+              instructor: '', name: '', payMethod: 'transfer',
+              isRenewal: false, source: 'excel', isAuto: true,
+            });
+            cntIncome++;
+          }
+        }
+        if (expenseCol) {
+          const amt = parseAmount(row[expenseCol]);
+          if (amt > 0) {
+            const content = descCol ? String(row[descCol] || '').trim() : '';
+            SM.addShared({ date, amount: amt, content, source: 'excel', isAuto: true });
+            cntExpense++;
+          }
+        }
+      });
+
+      renderFinanceData();
+      showToast(`업로드 완료 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건`);
+    } catch (err) {
+      console.error('엑셀 파싱 오류:', err);
+      showToast('엑셀 파싱 중 오류가 발생했습니다');
+    }
+    // 같은 파일 재업로드도 가능하도록 input 초기화
+    document.getElementById('fin-excel-input').value = '';
+  };
+  reader.readAsBinaryString(file);
+}
+
+// ════════════════════════════════
+// 영수증 OCR (Google Vision API)
+// ════════════════════════════════
+
+/**
+ * File → Base64 DataURL 변환 (Promise)
+ */
+function toBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * OCR 텍스트에서 날짜 · 금액 · 상호명을 추출합니다.
+ * @returns {{ date: string|null, amount: number|null, content: string|null }}
+ */
+function extractReceiptData(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // ── 날짜 추출 ──
+  let date = null;
+  const datePatterns = [
+    /(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/,   // 2025-11-01 / 2025.11.01
+    /(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/,       // 2025년 11월 1일
+    /(\d{2})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/,    // 25-11-01
+  ];
+  outer: for (const line of lines) {
+    for (const pat of datePatterns) {
+      const m = line.match(pat);
+      if (m) {
+        const y = m[1].length === 2 ? '20' + m[1] : m[1];
+        date = `${y}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+        break outer;
+      }
+    }
+  }
+
+  // ── 금액 추출 ──
+  // 1순위: 합계/총액 등 키워드 근처 숫자
+  let amount = null;
+  const amtKeyword = /합계|총액|총금액|결제금액|받을금액|청구금액|승인금액|total|amount/i;
+  for (const line of lines) {
+    if (amtKeyword.test(line)) {
+      const nums = line.match(/[\d,]+/g);
+      if (nums) {
+        const n = parseInt(nums[nums.length - 1].replace(/,/g, ''), 10);
+        if (!isNaN(n) && n >= 100) { amount = n; break; }
+      }
+    }
+  }
+  // 2순위: 텍스트 전체에서 가장 큰 정수 (100 이상)
+  if (!amount) {
+    const allNums = [...text.matchAll(/[\d,]+/g)]
+      .map(m => parseInt(m[0].replace(/,/g, ''), 10))
+      .filter(n => !isNaN(n) && n >= 100);
+    if (allNums.length) amount = Math.max(...allNums);
+  }
+
+  // ── 상호명 추출 ──
+  // 첫 번째 의미있는 줄 (숫자로만 이루어지지 않고, 구분선이 아니며, 2자 이상)
+  let content = null;
+  for (const line of lines) {
+    if (line.length < 2)           continue;
+    if (/^[\d\s\-.:\/]+$/.test(line)) continue;  // 숫자·구분자만
+    if (/^[*\-=|]+$/.test(line))   continue;      // 구분선
+    content = line;
+    break;
+  }
+
+  return { date, amount, content };
+}
+
+/**
+ * 영수증 이미지를 Google Vision API로 분석하여
+ * 지출 입력 폼(`prefix`-date / -amount / -content)을 채웁니다.
+ * DB 저장은 하지 않습니다 — 사용자가 확인 후 [추가] 버튼을 눌러야 저장됩니다.
+ *
+ * @param {File}   file   - 이미지 파일
+ * @param {'fe'|'fp'} prefix - 공용지출('fe') 또는 개인지출('fp')
+ */
+async function analyzeReceipt(file, prefix) {
+  const btn = document.getElementById(`${prefix}-scan-btn`);
+  if (!btn) return;
+
+  const origLabel   = btn.innerHTML;
+  btn.innerHTML     = '⏳ 분석 중…';
+  btn.disabled      = true;
+
+  try {
+    // 이미지 → base64
+    const dataUrl  = await toBase64(file);
+    const b64      = dataUrl.split(',')[1];
+
+    // Vision API 호출
+    const res = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${GOOGLE_VISION_API_KEY}`,
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            image:    { content: b64 },
+            features: [{ type: 'TEXT_DETECTION', maxResults: 1 }],
+          }],
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.message || `HTTP ${res.status}`);
+    }
+
+    const json     = await res.json();
+    const fullText = json.responses?.[0]?.textAnnotations?.[0]?.description || '';
+
+    if (!fullText) {
+      showToast('텍스트를 인식하지 못했습니다 — 직접 입력해주세요');
+      return;
+    }
+
+    const { date, amount, content } = extractReceiptData(fullText);
+
+    if (prefix === 'fi') {
+      // 매출 폼 채우기 — date · amount만 적용, 카드 영수증 감지 시 결제수단 자동 세팅
+      if (date)   document.getElementById('fi-date').value   = date;
+      if (amount) document.getElementById('fi-amount').value = amount;
+
+      const isCard = /카드|신용카드|체크카드|승인번호|VISA|MASTER|AMEX|CARD/i.test(fullText);
+      if (isCard) {
+        const payEl = document.getElementById('fi-pay');
+        if (payEl) payEl.value = 'card';
+        const installField = document.getElementById('fi-install-field');
+        if (installField) installField.style.display = '';
+      }
+      if (date || amount) fiIsAuto = true;
+
+      const filled = [date && '날짜', amount && '금액', isCard && '카드 감지'].filter(Boolean);
+      showToast(filled.length
+        ? `${filled.join(' · ')} 인식 완료 — 할부 개월 확인 후 [추가] 버튼을 누르세요`
+        : '인식된 항목이 없습니다 — 직접 입력해주세요');
+    } else {
+      // 공용지출·개인지출 폼 채우기
+      if (date)    document.getElementById(`${prefix}-date`).value    = date;
+      if (amount)  document.getElementById(`${prefix}-amount`).value  = amount;
+      if (content) document.getElementById(`${prefix}-content`).value = content;
+
+      const filled = [date && '날짜', amount && '금액', content && '상호명'].filter(Boolean);
+      if (filled.length) {
+        // OCR로 폼이 채워졌음을 기록 → [추가] 버튼 클릭 시 isAuto: true 저장
+        if (prefix === 'fe') feIsAuto = true;
+        if (prefix === 'fp') fpIsAuto = true;
+      }
+      showToast(filled.length
+        ? `${filled.join(' · ')} 인식 완료 — 확인 후 [추가] 버튼을 누르세요`
+        : '인식된 항목이 없습니다 — 직접 입력해주세요'
+      );
+    }
+
+  } catch (err) {
+    console.error('OCR 오류:', err);
+    showToast(`영수증 분석 실패: ${err.message}`);
+  } finally {
+    btn.innerHTML = origLabel;
+    btn.disabled  = false;
+    document.getElementById(`${prefix}-scan-input`).value = '';
+  }
+}
+
+// ════════════════════════════════
+// 메인 렌더 함수
+// ════════════════════════════════
+export function renderFinance() {
+  document.getElementById('page-content').innerHTML = `
     <div class="page-header"><h1>💰 결산 시스템</h1></div>
 
     <!-- 월 이동 네비게이션 -->
@@ -144,18 +560,24 @@ export function renderFinance() {
       <button class="fin-nav-btn" id="fin-next">›</button>
     </div>
 
-    <!-- 수입 내역 섹션 -->
+    <!-- 엑셀 업로드 바 -->
+    <div class="fin-excel-bar">
+      <label class="btn btn-export fin-excel-label" for="fin-excel-input">
+        📥 통장 내역 엑셀 업로드
+      </label>
+      <input type="file" id="fin-excel-input" accept=".xlsx,.xls,.csv" style="display:none" />
+      <span class="fin-excel-hint">입금 열 → 매출 자동 등록 · 출금 열 → 공용지출 자동 등록 (현재 월에 저장)</span>
+    </div>
+
+    <!-- ① 매출 내역 -->
     <div class="fin-section">
       <div class="fin-section-header-row">
-        <span>💵 수입 내역</span>
-        <button class="fin-import-btn" disabled title="추후 엑셀/통장 내역 업로드 기능 연동 예정">
-          📥 외부 데이터 가져오기 (준비 중)
-        </button>
+        <span>💵 매출 내역</span>
       </div>
       <div class="fin-form">
         <div class="fin-form-field">
           <label>날짜</label>
-          <input type="date" id="fi-date" class="fin-input" />
+          <input type="date" id="fi-date" class="fin-input" value="${todayStr()}" />
         </div>
         <div class="fin-form-field">
           <label>강사</label>
@@ -179,34 +601,45 @@ export function renderFinance() {
             <option value="transfer">계좌이체</option>
           </select>
         </div>
+        <div class="fin-form-field" id="fi-install-field">
+          <label>할부</label>
+          <input type="number" id="fi-install" class="fin-input" value="1" min="1" max="60" style="width:60px" />
+          <span style="font-size:11px;color:var(--text-muted)">개월 (1=일시불)</span>
+        </div>
+        <div class="fin-form-field">
+          <label>유형</label>
+          <div class="fin-type-toggle">
+            <button class="fin-toggle-btn active" id="fi-type-new">신규</button>
+            <button class="fin-toggle-btn" id="fi-type-renewal">재등록</button>
+          </div>
+        </div>
+        <input type="file" id="fi-scan-input" accept="image/*" capture="environment" style="display:none" />
+        <button class="fin-scan-btn" id="fi-scan-btn">📷 영수증 스캔</button>
         <button class="btn btn-export" id="fi-add-btn">+ 추가</button>
       </div>
       <div class="fin-table-wrap">
         <table class="fin-table">
           <thead><tr>
-            <th>날짜</th><th>강사</th><th>회원명</th><th>금액</th><th>결제수단</th><th></th>
+            <th>날짜</th><th>강사</th><th>회원명</th><th>금액</th><th>결제수단</th><th>유형</th><th></th>
           </tr></thead>
           <tbody id="fi-tbody"></tbody>
           <tfoot><tr>
-            <td colspan="3" style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
-            <td colspan="3" id="fi-total"></td>
+            <td colspan="3" style="text-align:right;font-size:12px;color:var(--text-muted)">정산 포함 합계</td>
+            <td colspan="4" id="fi-total"></td>
           </tr></tfoot>
         </table>
       </div>
     </div>
 
-    <!-- 지출 내역 섹션 -->
+    <!-- ② 공용지출 내역 -->
     <div class="fin-section">
       <div class="fin-section-header-row">
-        <span>💸 지출 내역</span>
-        <button class="fin-import-btn" disabled title="추후 엑셀/통장 내역 업로드 기능 연동 예정">
-          📥 외부 데이터 가져오기 (준비 중)
-        </button>
+        <span>💸 공용지출 내역</span>
       </div>
       <div class="fin-form">
         <div class="fin-form-field">
           <label>날짜</label>
-          <input type="date" id="fe-date" class="fin-input" />
+          <input type="date" id="fe-date" class="fin-input" value="${todayStr()}" />
         </div>
         <div class="fin-form-field">
           <label>내용</label>
@@ -216,256 +649,384 @@ export function renderFinance() {
           <label>금액 (원)</label>
           <input type="number" id="fe-amount" class="fin-input" placeholder="0" style="width:120px" min="0" />
         </div>
-        <div class="fin-form-field">
-          <label>결제자</label>
-          <select id="fe-payer" class="fin-input">
-            <option value="shared">공용</option>
-            <option value="ko">고희재 사비</option>
-            <option value="lee">이건우 사비</option>
-          </select>
-        </div>
+        <input type="file" id="fe-scan-input" accept="image/*" capture="environment" style="display:none" />
+        <button class="fin-scan-btn" id="fe-scan-btn">📷 영수증 스캔</button>
         <button class="btn btn-export" id="fe-add-btn">+ 추가</button>
       </div>
       <div class="fin-table-wrap">
         <table class="fin-table">
-          <thead><tr>
-            <th>날짜</th><th>내용</th><th>금액</th><th>결제자</th><th></th>
-          </tr></thead>
+          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th></th></tr></thead>
           <tbody id="fe-tbody"></tbody>
           <tfoot><tr>
-            <td colspan="2" style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
-            <td colspan="3" id="fe-total"></td>
+            <td style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
+            <td></td>
+            <td colspan="2" id="fe-total"></td>
           </tr></tfoot>
         </table>
       </div>
     </div>
 
-    <!-- 결산 리포트 섹션 -->
+    <!-- ③ 개인지출 내역 -->
+    <div class="fin-section">
+      <div class="fin-section-header-row">
+        <span>🧾 개인지출 내역 <span style="font-size:11px;color:var(--text-muted);font-weight:400">개인이 결제한 공용 비용 — 상대방이 절반 부담</span></span>
+      </div>
+      <div class="fin-form">
+        <div class="fin-form-field">
+          <label>날짜</label>
+          <input type="date" id="fp-date" class="fin-input" value="${todayStr()}" />
+        </div>
+        <div class="fin-form-field">
+          <label>내용</label>
+          <input type="text" id="fp-content" class="fin-input" placeholder="기구 구매" style="width:160px" />
+        </div>
+        <div class="fin-form-field">
+          <label>금액 (원)</label>
+          <input type="number" id="fp-amount" class="fin-input" placeholder="0" style="width:120px" min="0" />
+        </div>
+        <div class="fin-form-field">
+          <label>결제자</label>
+          <select id="fp-payer" class="fin-input">
+            <option value="ko">고희재</option>
+            <option value="lee">이건우</option>
+          </select>
+        </div>
+        <div class="fin-form-field">
+          <label>할부</label>
+          <input type="number" id="fp-install" class="fin-input" value="1" min="1" max="60" style="width:60px" />
+          <span style="font-size:11px;color:var(--text-muted)">개월 (1=일시불)</span>
+        </div>
+        <input type="file" id="fp-scan-input" accept="image/*" capture="environment" style="display:none" />
+        <button class="fin-scan-btn" id="fp-scan-btn">📷 영수증 스캔</button>
+        <button class="btn btn-export" id="fp-add-btn">+ 추가</button>
+      </div>
+      <div class="fin-table-wrap">
+        <table class="fin-table">
+          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th>결제자</th><th></th></tr></thead>
+          <tbody id="fp-tbody"></tbody>
+          <tfoot><tr>
+            <td style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
+            <td></td>
+            <td colspan="3" id="fp-total"></td>
+          </tr></tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- ④ 결산 리포트 -->
     <div class="fin-report-section">
       <div class="fin-report-title">
         📊 월말 결산 리포트 — <span id="fin-report-month"></span>
       </div>
       <div class="fin-report-grid" id="fin-report-grid"></div>
     </div>
+
+    <!-- ⑤ 최종 보정 -->
+    <div class="fin-adjust-section">
+      <div class="fin-adjust-title">⚖️ 최종 보정</div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">장부에 적기 모호한 항목을 수동으로 조정합니다. 음수 입력 시 차감, 양수 입력 시 가산됩니다.</p>
+      <div class="fin-adjust-grid" id="fin-adjust-grid"></div>
+    </div>
   `;
 
   bindFinanceEvents();
-  renderFinanceData(); // 폼을 그린 직후 데이터도 바로 채워줍니다
+  renderFinanceData();
 }
 
 // ════════════════════════════════
-// 데이터 렌더 함수 (월 변경 시마다 호출)
+// 데이터 렌더 (항상 날짜 오름차순 정렬)
 // ════════════════════════════════
-
-/**
- * 현재 월(finMonth)의 수입/지출 테이블과 결산 리포트를 업데이트합니다.
- */
 function renderFinanceData() {
-  const data     = SettlementManager.getMonthData();
-  const incomes  = data.incomes  || [];
-  const expenses = data.expenses || [];
-  const adj      = data.adjustments || {
-    ko:  { amount: 0, reason: '' },
-    lee: { amount: 0, reason: '' },
-  };
+  const data = SM.get();
 
-  // 월 레이블 업데이트: "2026년 4월"
-  const [y, m] = finMonth.split('-');
-  document.getElementById('fin-month-label').textContent  = `${y}년 ${parseInt(m)}월`;
-  document.getElementById('fin-report-month').textContent = `${y}년 ${parseInt(m)}월`;
+  // 날짜 오름차순 정렬 (원본 건드리지 않음)
+  const incomes         = sortByDate(data.incomes);
+  const expenses        = sortByDate(data.expenses);
+  const privateExpenses = sortByDate(data.privateExpenses);
 
-  // ── 헬퍼: 필드가 비어있으면 [입력 필요] 배지를 반환합니다 ──
-  function reqBadge(val, field, type, id) {
-    if (val && val.toString().trim()) return escHtml(val);
-    return `<span class="badge-required" data-edit="${field}" data-type="${type}" data-id="${id}">입력 필요</span>`;
-  }
-  function reqBadgeSelect(val, field, type, id, renderFn) {
-    if (val && val.toString().trim()) return renderFn(val);
-    return `<span class="badge-required" data-edit="${field}" data-type="${type}" data-id="${id}">입력 필요</span>`;
+  // 월 레이블
+  const label = monthLabel(finMonth);
+  document.getElementById('fin-month-label').textContent  = label;
+  document.getElementById('fin-report-month').textContent = label;
+
+  // prev 버튼 비활성화
+  const prevBtn = document.getElementById('fin-prev');
+  if (prevBtn) {
+    prevBtn.disabled       = (finMonth === LEGACY_KEY);
+    prevBtn.style.opacity  = (finMonth === LEGACY_KEY) ? '0.3' : '1';
+    prevBtn.style.cursor   = (finMonth === LEGACY_KEY) ? 'not-allowed' : 'pointer';
   }
 
-  // ── 수입 테이블 채우기 ──
+  // ── 매출 테이블 ──
+  const settlableTotal = incomes.filter(r => !r.isRenewal).reduce((s, r) => s + r.amount, 0);
+  const srcTag = r => r.source && r.source !== 'manual'
+    ? ` <span style="font-size:10px;color:var(--text-muted)">[${escHtml(r.source)}]</span>` : '';
+
   document.getElementById('fi-tbody').innerHTML = incomes.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="6">등록된 수입이 없습니다</td></tr>'
-    : incomes.map(r => {
-        const instCell = reqBadgeSelect(r.instructor, 'instructor', 'income', r.id,
-          v => `<span class="badge-${v}">${v === 'ko' ? '고희재' : '이건우'}</span>`);
-        const nameCell = reqBadge(r.name, 'name', 'income', r.id);
-        const srcTag   = r.source && r.source !== 'manual'
-          ? ` <span style="font-size:10px;color:var(--text-muted)">[${r.source}]</span>` : '';
-        return `
-        <tr>
-          <td>${r.date}${srcTag}</td>
-          <td>${instCell}</td>
-          <td>${nameCell}</td>
+    ? '<tr class="fin-empty-row"><td colspan="7">등록된 매출이 없습니다</td></tr>'
+    : incomes.map(r => `
+        <tr class="fin-data-row${r.isRenewal ? ' fi-renewal-row' : ''}" data-id="${escHtml(r.id)}" data-section="income" title="클릭하여 수정">
+          <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}${srcTag(r)}</td>
+          <td>${r.instructor
+            ? `<span class="badge-${escHtml(r.instructor)}">${r.instructor === 'ko' ? '고희재' : '이건우'}</span>`
+            : '<span style="color:var(--text-muted);font-size:11px">—</span>'}</td>
+          <td>${escHtml(r.name || '—')}</td>
           <td style="font-weight:600">${fmtMoney(r.amount)}</td>
-          <td>${r.payMethod === 'card' ? '카드' : '계좌이체'}</td>
-          <td><button class="fin-del" data-type="income" data-id="${r.id}">✕</button></td>
-        </tr>`;
-      }).join('');
+          <td>${r.payMethod === 'card' ? '카드' : '계좌이체'}${r.isInstallment ? ` <span class="fin-install-badge">${r.installLegacyCount ? `${r.installLegacyCount}/${r.installTotal}회 합산` : `${r.installNo}/${r.installTotal}`}</span>` : ''}</td>
+          <td>
+            <button class="fin-type-btn ${r.isRenewal ? 'renewal' : 'new'}"
+                    data-id="${escHtml(r.id)}">${r.isRenewal ? '재등록' : '신규'}</button>
+          </td>
+          <td><button class="fin-del" data-section="income" data-id="${escHtml(r.id)}">✕</button></td>
+        </tr>`
+    ).join('');
 
   document.getElementById('fi-total').innerHTML =
-    `<strong>${fmtMoney(incomes.reduce((s, r) => s + r.amount, 0))}</strong>`;
+    `<strong>${fmtMoney(settlableTotal)}</strong>`
+    + ` <span style="font-size:11px;color:var(--text-muted)">(재등록 제외)</span>`;
 
-  // ── 지출 테이블 채우기 ──
+  // ── 공용지출 테이블 ──
   document.getElementById('fe-tbody').innerHTML = expenses.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="5">등록된 지출이 없습니다</td></tr>'
-    : expenses.map(r => {
-        const payLabel    = r.payer === 'shared' ? '공용' : r.payer === 'ko' ? '고희재 사비' : '이건우 사비';
-        const badgeCls    = r.payer === 'shared' ? 'badge-shared' : `badge-${r.payer}`;
-        const contentCell = reqBadge(r.content, 'content', 'expense', r.id);
-        const payerCell   = reqBadgeSelect(r.payer, 'payer', 'expense', r.id,
-          () => `<span class="${badgeCls}">${payLabel}</span>`);
-        const srcTag = r.source && r.source !== 'manual'
-          ? ` <span style="font-size:10px;color:var(--text-muted)">[${r.source}]</span>` : '';
-        return `
-        <tr>
-          <td>${r.date}${srcTag}</td>
-          <td>${contentCell}</td>
+    ? '<tr class="fin-empty-row"><td colspan="4">등록된 공용지출이 없습니다</td></tr>'
+    : expenses.map(r => `
+        <tr class="fin-data-row" data-id="${escHtml(r.id)}" data-section="shared" title="클릭하여 수정">
+          <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}${srcTag(r)}</td>
+          <td>${escHtml(r.content || '—')}</td>
           <td style="font-weight:600">${fmtMoney(r.amount)}</td>
-          <td>${payerCell}</td>
-          <td><button class="fin-del" data-type="expense" data-id="${r.id}">✕</button></td>
-        </tr>`;
-      }).join('');
+          <td><button class="fin-del" data-section="shared" data-id="${escHtml(r.id)}">✕</button></td>
+        </tr>`
+    ).join('');
 
   document.getElementById('fe-total').innerHTML =
     `<strong>${fmtMoney(expenses.reduce((s, r) => s + r.amount, 0))}</strong>`;
 
-  // ── 삭제 버튼 이벤트 바인딩 ──
+  // ── 개인지출 테이블 ──
+  document.getElementById('fp-tbody').innerHTML = privateExpenses.length === 0
+    ? '<tr class="fin-empty-row"><td colspan="5">등록된 개인지출이 없습니다</td></tr>'
+    : privateExpenses.map(r => `
+        <tr class="fin-data-row" data-id="${escHtml(r.id)}" data-section="private" title="클릭하여 수정">
+          <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}</td>
+          <td>${escHtml(r.content || '—')}</td>
+          <td style="font-weight:600">${fmtMoney(r.amount)}${r.isInstallment ? ` <span class="fin-install-badge">${r.installLegacyCount ? `${r.installLegacyCount}/${r.installTotal}회 합산` : `${r.installNo}/${r.installTotal}`}</span>` : ''}</td>
+          <td><span class="badge-${escHtml(r.payer)}">${r.payer === 'ko' ? '고희재' : '이건우'}</span></td>
+          <td><button class="fin-del" data-section="private" data-id="${escHtml(r.id)}">✕</button></td>
+        </tr>`
+    ).join('');
+
+  document.getElementById('fp-total').innerHTML =
+    `<strong>${fmtMoney(privateExpenses.reduce((s, r) => s + r.amount, 0))}</strong>`;
+
+  // ── 유형 토글 버튼 (매출 행 내) ──
+  document.querySelectorAll('.fin-type-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const cur = SM.get().incomes.find(x => x.id === btn.dataset.id);
+      if (!cur) return;
+      SM.update('income', btn.dataset.id, { isRenewal: !cur.isRenewal });
+      renderFinanceData();
+    });
+  });
+
+  // ── 삭제 버튼 ──
   document.querySelectorAll('.fin-del').forEach(btn => {
-    btn.addEventListener('click', () => {
-      SettlementManager.deleteEntry(btn.dataset.type, btn.dataset.id);
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      SM.del(btn.dataset.section, btn.dataset.id);
       renderFinanceData();
       showToast('삭제했습니다');
     });
   });
 
-  // ── [입력 필요] 배지 클릭 → 인라인 편집 활성화 ──
-  document.querySelectorAll('.badge-required').forEach(badge => {
-    badge.addEventListener('click', function () {
-      const { edit: field, type, id } = this.dataset;
-      const td = this.parentElement;
-
-      let inputHtml;
-      if (field === 'instructor') {
-        inputHtml = `
-          <select class="fin-inline-input" data-field="${field}" data-type="${type}" data-id="${id}">
-            <option value="">-- 선택 --</option>
-            <option value="ko">고희재</option>
-            <option value="lee">이건우</option>
-          </select>`;
-      } else if (field === 'payer') {
-        inputHtml = `
-          <select class="fin-inline-input" data-field="${field}" data-type="${type}" data-id="${id}">
-            <option value="">-- 선택 --</option>
-            <option value="shared">공용</option>
-            <option value="ko">고희재 사비</option>
-            <option value="lee">이건우 사비</option>
-          </select>`;
-      } else {
-        inputHtml = `
-          <input class="fin-inline-input" type="text"
-            data-field="${field}" data-type="${type}" data-id="${id}" placeholder="입력..." />`;
-      }
-
-      td.innerHTML = `
-        <div class="fin-inline-edit">
-          ${inputHtml}
-          <button class="fin-inline-save" data-field="${field}" data-type="${type}" data-id="${id}">저장</button>
-        </div>`;
-      td.querySelector('.fin-inline-input').focus();
-
-      td.querySelector('.fin-inline-save').addEventListener('click', function () {
-        const val = td.querySelector('.fin-inline-input').value.trim();
-        if (!val) { showToast('값을 입력해주세요'); return; }
-        SettlementManager.updateEntry(this.dataset.type, this.dataset.id, { [this.dataset.field]: val });
-        renderFinanceData();
-      });
+  // ── 행 클릭 → 편집 모드 ──
+  document.querySelectorAll('.fin-data-row').forEach(row => {
+    row.addEventListener('click', e => {
+      if (e.target.closest('.fin-del') || e.target.closest('.fin-type-btn')) return;
+      enterEditMode(row);
     });
   });
 
-  // ── 결산 리포트 렌더링 ──
-  renderFinanceReport(incomes, expenses, adj);
+  // ── 결산 리포트 (정렬된 배열로 계산) ──
+  renderReport({ incomes, expenses, privateExpenses, adjustments: data.adjustments || {} });
+  renderAdjustmentSection(data);
 }
 
 // ════════════════════════════════
-// 결산 리포트 렌더 함수
+// 인라인 편집 모드
 // ════════════════════════════════
+function enterEditMode(row) {
+  const section = row.dataset.section;
+  const id      = row.dataset.id;
+  const data    = SM.get();
+  const key     = section === 'income' ? 'incomes' : section === 'shared' ? 'expenses' : 'privateExpenses';
+  const r       = data[key].find(x => x.id === id);
+  if (!r) return;
 
-/**
- * 강사별 정산 카드를 그립니다.
- * 보정액 입력 시 실시간으로 최종 수령액을 업데이트합니다.
- */
-function renderFinanceReport(incomes, expenses, adj) {
+  const actionCells = `
+    <td style="white-space:nowrap">
+      <button class="fin-edit-save">저장</button>
+      <button class="fin-edit-cancel">취소</button>
+    </td>`;
+
+  if (section === 'income') {
+    row.innerHTML = `
+      <td><input class="fin-inline-input" type="date" name="date" value="${escHtml(r.date)}" /></td>
+      <td>
+        <select class="fin-inline-input" name="instructor">
+          <option value=""   ${!r.instructor ? 'selected' : ''}>(미지정)</option>
+          <option value="ko"  ${r.instructor === 'ko'  ? 'selected' : ''}>고희재</option>
+          <option value="lee" ${r.instructor === 'lee' ? 'selected' : ''}>이건우</option>
+        </select>
+      </td>
+      <td><input class="fin-inline-input" type="text" name="name" value="${escHtml(r.name || '')}" style="width:80px" /></td>
+      <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
+      <td>
+        <select class="fin-inline-input" name="payMethod">
+          <option value="card"     ${r.payMethod === 'card'     ? 'selected' : ''}>카드</option>
+          <option value="transfer" ${r.payMethod === 'transfer' ? 'selected' : ''}>계좌이체</option>
+        </select>
+      </td>
+      <td>
+        <select class="fin-inline-input" name="isRenewal">
+          <option value="false" ${!r.isRenewal ? 'selected' : ''}>신규</option>
+          <option value="true"  ${ r.isRenewal ? 'selected' : ''}>재등록</option>
+        </select>
+      </td>
+      ${actionCells}`;
+
+  } else if (section === 'shared') {
+    row.innerHTML = `
+      <td><input class="fin-inline-input" type="date" name="date" value="${escHtml(r.date)}" /></td>
+      <td><input class="fin-inline-input" type="text" name="content" value="${escHtml(r.content || '')}" style="width:140px" /></td>
+      <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
+      ${actionCells}`;
+
+  } else {
+    row.innerHTML = `
+      <td><input class="fin-inline-input" type="date" name="date" value="${escHtml(r.date)}" /></td>
+      <td><input class="fin-inline-input" type="text" name="content" value="${escHtml(r.content || '')}" style="width:140px" /></td>
+      <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
+      <td>
+        <select class="fin-inline-input" name="payer">
+          <option value="ko"  ${r.payer === 'ko'  ? 'selected' : ''}>고희재</option>
+          <option value="lee" ${r.payer === 'lee' ? 'selected' : ''}>이건우</option>
+        </select>
+      </td>
+      ${actionCells}`;
+  }
+
+  row.querySelector('.fin-edit-save').addEventListener('click', () => {
+    const patch = {};
+    row.querySelectorAll('[name]').forEach(el => {
+      let val = el.value;
+      if (el.name === 'amount')    val = parseInt(val, 10) || 0;
+      if (el.name === 'isRenewal') val = (val === 'true');
+      patch[el.name] = val;
+    });
+    SM.update(section, id, patch);
+
+    // 할부 개인지출 결제자 변경 시 이후 회차 자동 상속
+    let msg = '수정했습니다';
+    if (section === 'private' && r.isInstallment && r.installNo && patch.payer && patch.payer !== r.payer) {
+      cascadeInstallmentPayer(r.installGroupId, r.installNo + 1, patch.payer);
+      const payerName = patch.payer === 'ko' ? '고희재' : '이건우';
+      msg = `${r.installNo + 1}회차부터 결제자를 ${payerName}로 변경했습니다`;
+    }
+
+    renderFinanceData();
+    showToast(msg);
+  });
+
+  row.querySelector('.fin-edit-cancel').addEventListener('click', () => {
+    renderFinanceData();
+  });
+}
+
+// ════════════════════════════════
+// 결산 리포트
+// ════════════════════════════════
+function renderReport(data) {
   const grid = document.getElementById('fin-report-grid');
   if (!grid) return;
 
   grid.innerHTML = ['ko', 'lee'].map(inst => {
-    const name      = inst === 'ko' ? '고희재' : '이건우';
-    const other     = inst === 'ko' ? '이건우' : '고희재';
-    const s         = SettlementManager.calcSettlement(inst, incomes, expenses, adj);
-    const adjAmt    = adj[inst]?.amount || 0;
-    const adjReason = adj[inst]?.reason || '';
-    const finalCls  = s.final >= 0 ? 'plus' : 'minus';
+    const name  = inst === 'ko' ? '고희재' : '이건우';
+    const other = inst === 'ko' ? '이건우' : '고희재';
+    const s     = SM.calc(inst, data);
+    const fcls  = s.adjustedFinal >= 0 ? 'plus' : 'minus';
 
     return `
       <div class="fin-report-card">
         <div class="fin-report-name">${name}</div>
         <div class="fin-report-row">
-          <span class="fin-report-label">총 매출</span>
+          <span class="fin-report-label">정산 매출 (신규)</span>
           <span class="fin-report-val">${fmtMoney(s.myIncome)}</span>
         </div>
+        ${s.renewalAmt > 0 ? `
         <div class="fin-report-row">
-          <span class="fin-report-label">공용 지출 50% 차감</span>
-          <span class="fin-report-val minus">− ${fmtMoney(s.sharedExp * 0.5)}</span>
+          <span class="fin-report-label" style="color:#2563eb">재등록 매출 (정산 제외)</span>
+          <span class="fin-report-val" style="color:#2563eb">${fmtMoney(s.renewalAmt)}</span>
+        </div>` : ''}
+        <div class="fin-report-row">
+          <span class="fin-report-label">공용지출 50% 차감</span>
+          <span class="fin-report-val minus">− ${fmtMoney(s.sharedTotal * 0.5)}</span>
         </div>
         <div class="fin-report-row">
-          <span class="fin-report-label">${other} 사비 50% 차감</span>
-          <span class="fin-report-val minus">− ${fmtMoney(s.otherExp * 0.5)}</span>
+          <span class="fin-report-label">${other} 개인지출 50% 차감</span>
+          <span class="fin-report-val minus">− ${fmtMoney(s.otherPrivate * 0.5)}</span>
         </div>
         <div class="fin-report-row">
-          <span class="fin-report-label">본인 사비 50% 보전</span>
-          <span class="fin-report-val plus">+ ${fmtMoney(s.myExp * 0.5)}</span>
+          <span class="fin-report-label">본인 개인지출 50% 보전</span>
+          <span class="fin-report-val plus">+ ${fmtMoney(s.myPrivate * 0.5)}</span>
         </div>
-        <div class="fin-divider"></div>
+        ${s.adj.amount !== 0 ? `
         <div class="fin-report-row">
-          <span class="fin-report-label">기본 정산</span>
-          <span class="fin-report-val">${fmtMoney(s.base)}</span>
-        </div>
-        <div style="padding:8px 0 4px">
-          <div class="fin-adj-label">수동 보정</div>
-          <div class="fin-adj-inputs">
-            <input type="number" class="fin-adj-amount" data-inst="${inst}"
-              placeholder="±금액" value="${adjAmt || ''}" />
-            <input type="text" class="fin-adj-reason" data-inst="${inst}"
-              placeholder="보정 사유" value="${escHtml(adjReason)}" />
-          </div>
-        </div>
+          <span class="fin-report-label fin-adj-label">보정 내역: ${escHtml(s.adj.note || '—')}</span>
+          <span class="fin-report-val ${s.adj.amount > 0 ? 'plus' : 'minus'}">${s.adj.amount > 0 ? '+ ' : '− '}${fmtMoney(Math.abs(s.adj.amount))}</span>
+        </div>` : ''}
         <div class="fin-divider"></div>
         <div class="fin-final-row">
-          <span class="fin-final-label">최종 수령액</span>
-          <span class="fin-final-val ${finalCls}" id="fin-final-${inst}">${fmtMoney(s.final)}</span>
+          <span class="fin-final-label">최종 수령액${s.adj.amount !== 0 ? ' (보정 포함)' : ''}</span>
+          <span class="fin-final-val ${fcls}">${fmtMoney(s.adjustedFinal)}</span>
         </div>
       </div>`;
   }).join('');
+}
 
-  // ── 보정액 입력 시 최종 수령액을 실시간으로 업데이트 ──
-  document.querySelectorAll('.fin-adj-amount, .fin-adj-reason').forEach(el => {
-    el.addEventListener('input', () => {
-      const inst     = el.dataset.inst;
-      const amtEl    = document.querySelector(`.fin-adj-amount[data-inst="${inst}"]`);
-      const reasonEl = document.querySelector(`.fin-adj-reason[data-inst="${inst}"]`);
+// ════════════════════════════════
+// 최종 보정 섹션 렌더링
+// ════════════════════════════════
+function renderAdjustmentSection(data) {
+  const grid = document.getElementById('fin-adjust-grid');
+  if (!grid) return;
 
-      SettlementManager.saveAdjustment(inst, parseFloat(amtEl.value) || 0, reasonEl.value);
+  grid.innerHTML = ['ko', 'lee'].map(inst => {
+    const name = inst === 'ko' ? '고희재' : '이건우';
+    const adj  = (data.adjustments || {})[inst] || { amount: 0, note: '' };
+    return `
+      <div class="fin-adjust-card">
+        <div class="fin-adjust-name">${name}</div>
+        <div class="fin-adjust-row">
+          <input type="number" id="adj-${inst}-amount" class="fin-input fin-adjust-input"
+                 value="${adj.amount || 0}" placeholder="0 (음수 가능)" />
+          <input type="text" id="adj-${inst}-note" class="fin-input fin-adjust-note"
+                 value="${escHtml(adj.note || '')}" placeholder="보정 내용 (예: 현금 선지급)" />
+          <button class="btn btn-export fin-adjust-save" data-inst="${inst}">적용</button>
+        </div>
+        ${adj.amount ? `<div class="fin-adjust-preview">현재 보정: ${adj.amount > 0 ? '+' : ''}${fmtMoney(adj.amount)}${adj.note ? ` (${escHtml(adj.note)})` : ''}</div>` : ''}
+      </div>`;
+  }).join('');
 
-      // 저장 후 최종 수령액 span만 교체합니다 (전체 재렌더 없음)
-      const d    = SettlementManager.getMonthData();
-      const s    = SettlementManager.calcSettlement(inst, d.incomes || [], d.expenses || [], d.adjustments);
-      const span = document.getElementById(`fin-final-${inst}`);
-      if (span) {
-        span.textContent = fmtMoney(s.final);
-        span.className   = `fin-final-val ${s.final >= 0 ? 'plus' : 'minus'}`;
-      }
+  grid.querySelectorAll('.fin-adjust-save').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const inst   = btn.dataset.inst;
+      const amount = parseInt(document.getElementById(`adj-${inst}-amount`).value, 10) || 0;
+      const note   = document.getElementById(`adj-${inst}-note`).value.trim();
+      SM.setAdjustment(inst, amount, note);
+      renderFinanceData();
+      const name = inst === 'ko' ? '고희재' : '이건우';
+      showToast(amount !== 0
+        ? `${name} 보정 적용: ${amount > 0 ? '+' : ''}${fmtMoney(amount)}`
+        : `${name} 보정을 초기화했습니다`);
     });
   });
 }
@@ -473,67 +1034,155 @@ function renderFinanceReport(incomes, expenses, adj) {
 // ════════════════════════════════
 // 이벤트 바인딩
 // ════════════════════════════════
-
-/**
- * 결산 페이지의 이벤트 리스너를 등록합니다.
- * renderFinance() 마지막에 호출됩니다.
- */
 function bindFinanceEvents() {
-  // 날짜 입력 기본값을 오늘로 설정합니다
-  const today = new Date().toISOString().slice(0, 10);
-  document.getElementById('fi-date').value = today;
-  document.getElementById('fe-date').value = today;
-
-  // ── 월 이동 버튼 ──
+  // ── 월 이동 ──
   document.getElementById('fin-prev').addEventListener('click', () => {
-    const d = new Date(finMonth + '-01');
-    d.setMonth(d.getMonth() - 1);
-    finMonth = d.toISOString().slice(0, 7);
+    const prev = prevMonthKey(finMonth);
+    if (!prev) return;
+    finMonth = prev;
     renderFinanceData();
   });
   document.getElementById('fin-next').addEventListener('click', () => {
-    const d = new Date(finMonth + '-01');
-    d.setMonth(d.getMonth() + 1);
-    finMonth = d.toISOString().slice(0, 7);
+    finMonth = nextMonthKey(finMonth);
     renderFinanceData();
   });
 
-  // ── 수입 추가 ──
+  // ── 엑셀 업로드 ──
+  document.getElementById('fin-excel-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) handleExcelUpload(file);
+  });
+
+  // ── 영수증 스캔 — 공용지출 ──
+  document.getElementById('fe-scan-btn').addEventListener('click', () => {
+    document.getElementById('fe-scan-input').click();
+  });
+  document.getElementById('fe-scan-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) analyzeReceipt(file, 'fe');
+  });
+
+  // ── 영수증 스캔 — 개인지출 ──
+  document.getElementById('fp-scan-btn').addEventListener('click', () => {
+    document.getElementById('fp-scan-input').click();
+  });
+  document.getElementById('fp-scan-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) analyzeReceipt(file, 'fp');
+  });
+
+  // ── 매출 폼 유형 토글 ──
+  document.getElementById('fi-type-new').addEventListener('click', () => {
+    incomeIsRenewal = false;
+    document.getElementById('fi-type-new').classList.add('active');
+    document.getElementById('fi-type-renewal').classList.remove('active');
+  });
+  document.getElementById('fi-type-renewal').addEventListener('click', () => {
+    incomeIsRenewal = true;
+    document.getElementById('fi-type-renewal').classList.add('active');
+    document.getElementById('fi-type-new').classList.remove('active');
+  });
+
+  // ── 결제수단 변경 → 할부 필드 표시/숨김 ──
+  document.getElementById('fi-pay').addEventListener('change', () => {
+    const isCard       = document.getElementById('fi-pay').value === 'card';
+    const installField = document.getElementById('fi-install-field');
+    if (installField) installField.style.display = isCard ? '' : 'none';
+    if (!isCard) document.getElementById('fi-install').value = '1';
+  });
+
+  // ── 매출 영수증 스캔 ──
+  document.getElementById('fi-scan-btn').addEventListener('click', () => {
+    document.getElementById('fi-scan-input').click();
+  });
+  document.getElementById('fi-scan-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) analyzeReceipt(file, 'fi');
+    document.getElementById('fi-scan-input').value = '';
+  });
+
+  // ── 매출 추가 (할부 포함) ──
   document.getElementById('fi-add-btn').addEventListener('click', () => {
-    const date   = document.getElementById('fi-date').value;
-    const amount = parseInt(document.getElementById('fi-amount').value) || 0;
+    const date      = document.getElementById('fi-date').value;
+    const amount    = parseInt(document.getElementById('fi-amount').value, 10) || 0;
+    const payMethod = document.getElementById('fi-pay').value;
+    const install   = payMethod === 'card'
+      ? (parseInt(document.getElementById('fi-install').value, 10) || 1)
+      : 1;
+
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
-    SettlementManager.addEntry('income', {
-      date,
+    const base = {
       instructor: document.getElementById('fi-inst').value,
       name:       document.getElementById('fi-name').value.trim(),
-      amount,
-      payMethod:  document.getElementById('fi-pay').value,
-    });
+      payMethod,
+      isRenewal:  incomeIsRenewal,
+      ...(fiIsAuto && { isAuto: true }),
+    };
 
-    document.getElementById('fi-amount').value = '';
-    document.getElementById('fi-name').value   = '';
+    if (payMethod === 'card' && install > 1) {
+      const monthlyAmt = Math.round(amount / install);
+      distributeInstallment(date, monthlyAmt, install, base);
+      showToast(`${install}개월 할부로 등록했습니다 (월 ${fmtMoney(monthlyAmt)})`);
+    } else {
+      SM.addIncome({ ...base, date, amount });
+      fiIsAuto = false;
+      showToast('매출을 추가했습니다');
+    }
+
+    document.getElementById('fi-amount').value  = '';
+    document.getElementById('fi-name').value    = '';
+    document.getElementById('fi-install').value = '1';
     renderFinanceData();
-    showToast('수입을 추가했습니다');
   });
 
-  // ── 지출 추가 ──
+  // ── 공용지출 추가 ──
   document.getElementById('fe-add-btn').addEventListener('click', () => {
     const date   = document.getElementById('fe-date').value;
-    const amount = parseInt(document.getElementById('fe-amount').value) || 0;
+    const amount = parseInt(document.getElementById('fe-amount').value, 10) || 0;
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
-    SettlementManager.addEntry('expense', {
+    SM.addShared({
       date,
       content: document.getElementById('fe-content').value.trim(),
       amount,
-      payer:   document.getElementById('fe-payer').value,
+      ...(feIsAuto && { isAuto: true }),
     });
+    feIsAuto = false;
 
     document.getElementById('fe-amount').value  = '';
     document.getElementById('fe-content').value = '';
     renderFinanceData();
-    showToast('지출을 추가했습니다');
+    showToast('공용지출을 추가했습니다');
+  });
+
+  // ── 개인지출 추가 (할부 포함) ──
+  document.getElementById('fp-add-btn').addEventListener('click', () => {
+    const date    = document.getElementById('fp-date').value;
+    const amount  = parseInt(document.getElementById('fp-amount').value, 10) || 0;
+    const install = parseInt(document.getElementById('fp-install').value, 10) || 1;
+    if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
+
+    const base = {
+      content: document.getElementById('fp-content').value.trim(),
+      payer:   document.getElementById('fp-payer').value,
+      ...(fpIsAuto && { isAuto: true }),
+    };
+
+    if (install > 1) {
+      const monthlyAmt = Math.round(amount / install);
+      distributeExpenseInstallment(date, monthlyAmt, install, base, 'private');
+      fpIsAuto = false;
+      showToast(`${install}개월 할부로 등록했습니다 (월 ${fmtMoney(monthlyAmt)})`);
+    } else {
+      SM.addPrivate({ ...base, date, amount });
+      fpIsAuto = false;
+      showToast('개인지출을 추가했습니다');
+    }
+
+    document.getElementById('fp-amount').value  = '';
+    document.getElementById('fp-content').value = '';
+    document.getElementById('fp-install').value = '1';
+    renderFinanceData();
   });
 }

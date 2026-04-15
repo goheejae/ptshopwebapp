@@ -326,20 +326,38 @@ body.sidebar-collapsed #main { margin-left: 0; }
   display: flex; align-items: center; gap: 8px;
 }
 .sched-deadline-btn {
-  margin-left: auto;
-  padding: 3px 10px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  background: transparent;
+  background: none;
+  border: none;
+  padding: 0 1px;
+  margin-left: 3px;
+  font-size: 14px; font-weight: 700;
   color: var(--text-muted);
-  font-size: 12px; font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: color 0.15s;
+  line-height: inherit;
 }
 .sched-deadline-btn.active {
-  background: #ef4444;
-  color: #fff;
-  border-color: #ef4444;
+  color: #ef4444;
+}
+
+/* 터치 탭 앵커: 파란 외곽선 */
+.sched-cell--anchor {
+  outline: 2px solid #1e88e5 !important;
+  outline-offset: -2px;
+  z-index: 2;
+}
+
+/* 앵커 셀 우하단 핸들 점: 이것을 드래그해야만 범위 선택 시작 */
+.sched-cell-handle {
+  position: absolute;
+  width: 14px; height: 14px;
+  background: #1e88e5;
+  border-radius: 50%;
+  bottom: -7px; right: -7px;
+  z-index: 30;
+  touch-action: none;
+  box-shadow: 0 0 0 2px #fff, 0 2px 6px rgba(30,136,229,.45);
+  cursor: se-resize;
 }
 .sched-table-scroll { overflow-x: auto; position: relative; }
 .sched-time-line {
@@ -734,6 +752,150 @@ body.sidebar-collapsed #main { margin-left: 0; }
   border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer;
 }
 
+/* ── 엑셀 업로드 바 ── */
+.fin-excel-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 0; margin-bottom: 10px;
+}
+.fin-excel-label { cursor: pointer; font-size: 13px; }
+.fin-excel-hint  { font-size: 11px; color: var(--text-muted); }
+
+/* ── 자동 입력 표시 점 (엑셀 업로드 / OCR) ── */
+.fin-auto-dot {
+  display: inline-block;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #22c55e;
+  margin-right: 5px;
+  vertical-align: middle;
+  position: relative; top: -1px;
+  font-size: 0;           /* '●' 문자 숨기고 CSS 원형으로만 표시 */
+  line-height: 0;
+}
+
+/* ── 할부 배지 ── */
+.fin-install-badge {
+  display: inline-block;
+  font-size: 10px;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  font-weight: 600;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* ── 최종 보정 섹션 ── */
+.fin-adjust-section {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 20px 24px;
+  margin-top: 16px;
+  box-shadow: var(--shadow);
+}
+.fin-adjust-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.fin-adjust-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+@media (max-width: 640px) {
+  .fin-adjust-grid { grid-template-columns: 1fr; }
+}
+.fin-adjust-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.fin-adjust-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.fin-adjust-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.fin-adjust-input { width: 110px !important; }
+.fin-adjust-note  { flex: 1; min-width: 100px; }
+.fin-adjust-save  { flex-shrink: 0; padding: 6px 14px !important; font-size: 12px !important; }
+.fin-adjust-preview {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #f59e0b;
+  font-weight: 600;
+}
+.fin-adj-label {
+  color: #f59e0b !important;
+  font-style: italic;
+}
+
+/* ── 영수증 스캔 버튼 ── */
+.fin-scan-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff; border: none; border-radius: 8px;
+  padding: 6px 13px; font-size: 12px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; letter-spacing: 0.2px;
+  transition: opacity 0.15s;
+  align-self: flex-end;          /* fin-form flex 내에서 추가 버튼과 높이 맞춤 */
+}
+.fin-scan-btn:hover    { opacity: 0.88; }
+.fin-scan-btn:disabled { opacity: 0.45; cursor: wait; }
+
+/* ── 행 내 유형 토글 버튼 (신규/재등록) ── */
+.fin-type-btn {
+  padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700;
+  border: none; cursor: pointer; white-space: nowrap; transition: background 0.12s;
+}
+.fin-type-btn.new        { background: #f0fdf4; color: #16a34a; }
+.fin-type-btn.new:hover  { background: #dcfce7; }
+.fin-type-btn.renewal    { background: #dbeafe; color: #2563eb; }
+.fin-type-btn.renewal:hover { background: #bfdbfe; }
+
+/* ── 폼 내 신규/재등록 토글 ── */
+.fin-type-toggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.fin-toggle-btn {
+  flex: 1; padding: 5px 10px; font-size: 12px; font-weight: 600;
+  border: none; background: transparent; cursor: pointer; color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+}
+.fin-toggle-btn.active        { background: var(--accent); color: #fff; }
+.fin-toggle-btn:not(.active):hover { background: var(--bg); }
+
+/* ── 재등록 행 ── */
+.fi-renewal-row td { color: #2563eb; }
+
+/* ── 유형 배지 ── */
+.badge-renewal { background: #dbeafe; color: #2563eb; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.badge-new     { background: #f0fdf4; color: #16a34a; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+
+/* ── 편집 모드 저장/취소 버튼 ── */
+.fin-edit-save {
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;
+  margin-right: 4px;
+}
+.fin-edit-cancel {
+  background: none; border: 1px solid var(--border); color: var(--text-muted);
+  border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer;
+}
+.fin-edit-cancel:hover { background: var(--bg); }
+
+/* ── 데이터 행 hover (편집 가능 표시) ── */
+.fin-data-row { cursor: pointer; }
+.fin-data-row:hover td { background: #f0f4ff !important; }
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   #main { margin-left: 0; }
@@ -1005,4 +1167,152 @@ body.sidebar-collapsed #main { margin-left: 0; }
   box-shadow: 0 2px 6px rgba(0,0,0,0.3);
   z-index: 1;
   position: relative;
+}
+
+/* ════════════════════════════════════════════
+   매출일지 (Sales Log)
+   ════════════════════════════════════════════ */
+
+.sl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-top: 12px;
+}
+.sl-table th {
+  background: var(--surface2, #f4f6fb);
+  color: var(--text-muted, #7a829e);
+  font-weight: 600;
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 2px solid var(--border, #e2e6f0);
+  white-space: nowrap;
+}
+.sl-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #e2e6f0);
+  vertical-align: middle;
+}
+.sl-table tr:hover td {
+  background: rgba(99,102,241,0.04);
+}
+
+/* 상태 배지 */
+.sl-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.sl-badge.pending {
+  background: #fff3cd;
+  color: #856404;
+}
+.sl-badge.confirmed {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+/* 확정된 행 */
+.sl-row-confirmed td {
+  color: #374151;
+}
+.sl-row-confirmed td:first-child {
+  border-left: 3px solid #10b981;
+}
+
+/* 매칭 박스 (pending 행 내부) */
+.sl-match-box {
+  margin-top: 4px;
+  padding: 6px 10px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #065f46;
+}
+.sl-match-hint {
+  color: #9ca3af;
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
+/* 매칭 확인/수동확정/취소 버튼 */
+.sl-ok-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.sl-ok-btn:hover { opacity: 0.82; }
+.sl-ok-btn.ok      { background: #10b981; color: #fff; }
+.sl-ok-btn.manual  { background: #6366f1; color: #fff; }
+.sl-ok-btn.cancel  { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; }
+
+/* 확정 정보 (confirmed 행에 표시) */
+.sl-confirmed-info {
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+/* 범례 */
+.sl-match-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.78rem;
+  color: var(--text-muted, #7a829e);
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.sl-legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.sl-legend-dot.pending   { background: #f59e0b; }
+.sl-legend-dot.confirmed { background: #10b981; }
+
+/* 신규/재등록 타입 배지 (슬로그 인라인) */
+.sl-type-new     { color: #6366f1; font-weight: 600; font-size: 0.8rem; }
+.sl-type-renewal { color: #3b82f6; font-weight: 600; font-size: 0.8rem; }
+
+/* 인라인 편집 입력 */
+.sl-edit-input {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--border, #e2e6f0);
+  border-radius: 4px;
+  font-size: 0.83rem;
+  background: #fff;
+}
+.sl-edit-save {
+  padding: 3px 10px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.sl-edit-cancel {
+  padding: 3px 8px;
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  cursor: pointer;
 }

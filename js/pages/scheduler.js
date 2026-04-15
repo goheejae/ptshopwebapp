@@ -85,6 +85,13 @@ let selectedBgColor = '#ffffff';
 let lastTapCell = null;
 let lastTapTime  = 0;
 
+/** 터치: 탭 판별용 시작 좌표 */
+let touchStartX = 0;
+let touchStartY = 0;
+
+/** 터치 단일 탭으로 선택된 앵커 셀 (핸들 점이 붙는 셀) */
+let anchorCell = null;
+
 // ── 드롭다운 외부 클릭 시 닫기 (모듈 초기화 시 한 번만 등록) ──
 document.addEventListener('click', e => {
   if (!e.target.closest('.sched-dd-wrap')) {
@@ -111,12 +118,19 @@ document.addEventListener('touchmove', e => {
 document.addEventListener('touchend', () => {
   if (!isDragging) return;
   isDragging = false;
+  clearCellAnchor(); // 핸들 드래그 종료 시 앵커 제거
   if (document.querySelectorAll('.sched-cell.selected').length) {
     showFloatingDeleteBtn();
   } else {
     hideFloatingDeleteBtn();
   }
 });
+
+// 셀·핸들 외 영역 터치 시 앵커 해제
+document.addEventListener('touchstart', e => {
+  if (isDragging || !anchorCell) return;
+  if (!e.target.closest('.sched-cell')) clearCellAnchor();
+}, { passive: true });
 
 // ── 전역 mouseup 핸들러 (딱 한 번만 등록) ──
 // 드래그가 테이블 밖에서 끝나도 isDragging이 해제되도록 document에 등록합니다.
@@ -353,10 +367,7 @@ export function renderScheduler() {
       ${INSTRUCTORS.map(inst => `
         <div class="sched-table-wrap">
           <div class="sched-instructor-bar">
-            👤 ${inst.name}
-            <button class="sched-deadline-btn${DB.deadlineGet(inst.id) ? ' active' : ''}" data-inst="${inst.id}">
-              ${DB.deadlineGet(inst.id) ? '마감중' : '마감'}
-            </button>
+            👤 ${inst.name}<button class="sched-deadline-btn${DB.deadlineGet(inst.id) ? ' active' : ''}" data-inst="${inst.id}">[${DB.deadlineGet(inst.id) ? '마감중' : '마감'}]</button>
           </div>
           <div class="sched-table-scroll">
             <table class="sched-table" data-inst="${inst.id}" data-wkey="${wKey}">
@@ -546,16 +557,19 @@ function bindSchedulerEvents(wKey) {
 
   // ── 주간 네비게이션 버튼 ──
   document.getElementById('sc-prev').addEventListener('click', () => {
+    clearCellAnchor();
     schedWeekStart = addDays(schedWeekStart, -7);
     schedSelected  = [];
     renderScheduler();
   });
   document.getElementById('sc-next').addEventListener('click', () => {
+    clearCellAnchor();
     schedWeekStart = addDays(schedWeekStart, 7);
     schedSelected  = [];
     renderScheduler();
   });
   document.getElementById('sc-today').addEventListener('click', () => {
+    clearCellAnchor();
     schedWeekStart = getMonday(new Date());
     schedSelected  = [];
     renderScheduler();
@@ -685,7 +699,9 @@ function bindSchedulerEvents(wKey) {
     cell.addEventListener('mousedown',  onCellMouseDown);
     cell.addEventListener('mouseenter', onCellMouseEnter);
     cell.addEventListener('dblclick',   onCellDblClick);
-    cell.addEventListener('touchstart', onCellTouchStart, { passive: false });
+    // 모바일: touchstart는 좌표 기록만, touchend에서 탭/더블탭 판별
+    cell.addEventListener('touchstart', onCellTouchStart, { passive: true });
+    cell.addEventListener('touchend',   onCellTouchEnd);
   });
 }
 
@@ -694,36 +710,50 @@ function bindSchedulerEvents(wKey) {
 // ════════════════════════════════
 
 /**
- * 터치 시작: 더블탭이면 인라인 편집기를 열고, 단일 탭이면 드래그를 시작합니다.
+ * 터치 시작: 좌표만 기록합니다. 드래그/탭 판별은 touchend에서 합니다.
+ * 기본 스크롤 동작을 막지 않으므로 화면 이동이 자유롭습니다.
  * this = 터치한 <td> 요소
  */
 function onCellTouchStart(e) {
   if (e.touches.length !== 1) return;
   if (e.target.classList.contains('sched-input')) return;
+  const touch = e.touches[0];
+  touchStartX = touch.clientX;
+  touchStartY = touch.clientY;
+}
 
-  const now  = Date.now();
+/**
+ * 터치 종료: 이동 거리가 작으면 탭으로 간주합니다.
+ * - 더블탭(300ms 이내 동일 셀): 인라인 편집기 열기
+ * - 단일 탭: 앵커 표시 (파란 외곽선 + 우하단 핸들 점)
+ * this = 터치한 <td> 요소
+ */
+function onCellTouchEnd(e) {
+  if (e.changedTouches.length !== 1) return;
+  if (isDragging) return; // 핸들 드래그 중이면 무시
+  if (e.target.classList.contains('sched-input')) return;
+
+  const touch = e.changedTouches[0];
+  const dx = touch.clientX - touchStartX;
+  const dy = touch.clientY - touchStartY;
+  if (Math.sqrt(dx * dx + dy * dy) > 8) return; // 스크롤 → 탭 아님
+
   const cell = this;
+  const now  = Date.now();
 
-  // 더블탭 감지: 같은 셀에 300ms 이내 두 번 탭
+  // 더블탭: 같은 셀에 300ms 이내 두 번 탭
   if (lastTapCell === cell && now - lastTapTime < 300) {
-    e.preventDefault();
     lastTapCell = null;
-    isDragging  = false;
+    clearCellAnchor();
     clearSelection();
     openEditor(cell);
     return;
   }
+
   lastTapCell = cell;
   lastTapTime = now;
-
-  e.preventDefault();
-  isDragging   = true;
-  dragHasMoved = false;
-  hideFloatingDeleteBtn();
-  const { instId, wKey, day, hour } = coords(cell);
-  dragInfo = { instId, wKey, startDay: day, startHour: hour };
   clearSelection();
-  selectRange(instId, wKey, day, hour, day, hour);
+  showCellAnchor(cell);
 }
 
 /**
@@ -798,6 +828,44 @@ function clearSelection() {
   document.querySelectorAll('.sched-cell.selected')
     .forEach(c => c.classList.remove('selected'));
   schedSelected = [];
+}
+
+/**
+ * 터치 단일 탭 시 셀에 앵커를 표시합니다.
+ * 파란 외곽선과 우하단 핸들 점(드래그 범위 선택용)을 생성합니다.
+ * @param {HTMLElement} cell - .sched-cell 요소
+ */
+function showCellAnchor(cell) {
+  clearCellAnchor(); // 이전 앵커 제거
+  cell.classList.add('sched-cell--anchor');
+
+  const handle = document.createElement('div');
+  handle.className = 'sched-cell-handle';
+  cell.appendChild(handle);
+
+  handle.addEventListener('touchstart', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    isDragging   = true;
+    dragHasMoved = false;
+    hideFloatingDeleteBtn();
+    const { instId, wKey, day, hour } = coords(cell);
+    dragInfo = { instId, wKey, startDay: day, startHour: hour };
+    clearCellAnchor();
+    clearSelection();
+    selectRange(instId, wKey, day, hour, day, hour);
+  }, { passive: false });
+
+  anchorCell = cell;
+}
+
+/** 앵커 셀의 외곽선과 핸들 점을 제거합니다. */
+function clearCellAnchor() {
+  if (!anchorCell) return;
+  anchorCell.classList.remove('sched-cell--anchor');
+  const handle = anchorCell.querySelector('.sched-cell-handle');
+  if (handle) handle.remove();
+  anchorCell = null;
 }
 
 /**

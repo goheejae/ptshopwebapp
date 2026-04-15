@@ -23,6 +23,7 @@ import { renderCallLog }   from './pages/callLog.js';
 import { renderOtLog }     from './pages/otLog.js';
 import { renderStats }     from './pages/stats.js';
 import { renderNotice }    from './pages/notice.js';
+import { renderSalesLog }  from './pages/salesLog.js';
 
 // ════════════════════════════════
 // 라우터
@@ -39,6 +40,7 @@ const pages = {
   otLog:     renderOtLog,
   stats:     renderStats,
   notice:    renderNotice,
+  salesLog:  renderSalesLog,
 };
 
 /** 현재 활성화된 페이지 이름 */
@@ -171,7 +173,7 @@ navigate('dashboard');
 DB.startRealTimeSync(changed => {
   if (changed === 'scheduler' && currentPage === 'scheduler') pages.scheduler();
   if (changed === 'todos'     && currentPage === 'todo')      pages.todo();
-  if (changed === 'deadline'  && currentPage === 'scheduler') pages.scheduler();
+  if (changed === 'instructors' && currentPage === 'scheduler') pages.scheduler();
   // 공지사항: 전체 재렌더 대신 textarea 값만 업데이트해 커서 위치 유지
   if (changed === 'notice') {
     const ta = document.getElementById('notice-text');

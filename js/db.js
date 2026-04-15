@@ -56,11 +56,12 @@ const DB = {
         customTypes: toArray(raw.customTypes),
         todos:       toArray(raw.todos),
         finance:     raw.finance     || {},
+        salesLogs:   raw.salesLogs   || {},
         consults:    toArray(raw.consults ? Object.values(raw.consults) : []),
         callLogs:    toArray(raw.callLogs ? Object.values(raw.callLogs) : []),
         otLogs:      toArray(raw.otLogs   ? Object.values(raw.otLogs)   : []),
         notice:      raw.notice || '',
-        deadline:    raw.deadline || {},
+        instructors: raw.instructors || {},
       };
     } catch (e) {
       console.warn('Firebase 연결 실패 — 빈 데이터로 시작합니다.', e);
@@ -75,11 +76,12 @@ const DB = {
     customTypes: [],
     todos:       [],
     finance:     {},
+    salesLogs:   {},
     consults:    [],
     callLogs:    [],
     otLogs:      [],
     notice:      '',
-    deadline:    {},
+    instructors: {},
   }),
 
   /** Firebase 비동기 쓰기 (실패 시 토스트 알림) */
@@ -103,7 +105,7 @@ const DB = {
    */
   startRealTimeSync(onUpdate) {
     // 첫 번째 이벤트는 init()에서 이미 로드한 데이터이므로 건너뜀
-    let skipSched = true, skipTodos = true, skipNotice = true, skipDeadline = true;
+    let skipSched = true, skipTodos = true, skipNotice = true, skipInstructors = true;
 
     _fbdb.ref('scheduler').on('value', snap => {
       if (skipSched) { skipSched = false; return; }
@@ -123,10 +125,10 @@ const DB = {
       onUpdate('notice');
     }, () => showToast('⚠️ 공지사항 실시간 동기화 연결이 끊겼습니다.'));
 
-    _fbdb.ref('deadline').on('value', snap => {
-      if (skipDeadline) { skipDeadline = false; return; }
-      this._d.deadline = snap.val() || {};
-      onUpdate('deadline');
+    _fbdb.ref('instructors').on('value', snap => {
+      if (skipInstructors) { skipInstructors = false; return; }
+      this._d.instructors = snap.val() || {};
+      onUpdate('instructors');
     }, () => showToast('⚠️ 마감 실시간 동기화 연결이 끊겼습니다.'));
   },
 
@@ -135,19 +137,20 @@ const DB = {
   ════════════════════════════════════════════════════════ */
 
   /* ════════════════════════════════════════════════════════
-     DEADLINE
+     DEADLINE  (경로: instructors/{instId}/isClosed)
   ════════════════════════════════════════════════════════ */
 
   /** 강사의 마감 상태를 반환합니다. */
   deadlineGet(instId) {
-    return !!((this._d.deadline || {})[instId]);
+    return !!((this._d.instructors || {})[instId]?.isClosed);
   },
 
   /** 강사의 마감 상태를 Firebase에 저장합니다. */
   deadlineSet(instId, val) {
-    if (!this._d.deadline) this._d.deadline = {};
-    this._d.deadline[instId] = val;
-    this._fbSet(`deadline/${instId}`, val);
+    if (!this._d.instructors) this._d.instructors = {};
+    if (!this._d.instructors[instId]) this._d.instructors[instId] = {};
+    this._d.instructors[instId].isClosed = val;
+    this._fbSet(`instructors/${instId}/isClosed`, val);
   },
 
   /** 마감으로 채워진 셀(deadlineFilled: true)을 찾아 배경을 제거합니다. */
@@ -221,18 +224,100 @@ const DB = {
   ════════════════════════════════════════════════════════ */
 
   financeGet(monthKey) {
-    return (this._d.finance || {})[monthKey] || {
-      incomes: [],
-      expenses: [],
-      adjustments: { ko: { amount: 0, reason: '' }, lee: { amount: 0, reason: '' } },
+    const raw = (this._d.finance || {})[monthKey] || {};
+
+    // backward compat: old expenses stored payer='ko'|'lee' inside expenses array
+    const rawExp    = raw.expenses || [];
+    const sharedExp = rawExp.filter(e => !e.payer || e.payer === 'shared');
+    const migrExp   = rawExp.filter(e => e.payer && e.payer !== 'shared');
+
+    return {
+      incomes:         raw.incomes         || [],
+      expenses:        sharedExp,
+      privateExpenses: [...(raw.privateExpenses || []), ...migrExp],
+      adjustments:     raw.adjustments     || {},
     };
   },
 
   financeSet(monthKey, data) {
     if (!this._d.finance) this._d.finance = {};
     this._d.finance[monthKey] = data;
-    // monthKey의 '-'는 Firebase 키로 유효
     this._fbSet(`finance/${monthKey}`, data);
+  },
+
+  /** finance income 항목 추가 (salesLog 확정 시 사용) */
+  financeAddIncome(monthKey, fields) {
+    const d = this.financeGet(monthKey);
+    const income = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...fields };
+    d.incomes.push(income);
+    this.financeSet(monthKey, d);
+    return income;
+  },
+
+  /** finance income 항목 부분 업데이트 */
+  financeUpdateIncome(monthKey, incomeId, patch) {
+    const d = this.financeGet(monthKey);
+    const i = d.incomes.findIndex(r => r.id === incomeId);
+    if (i !== -1) d.incomes[i] = { ...d.incomes[i], ...patch };
+    this.financeSet(monthKey, d);
+  },
+
+  /** finance income 항목 삭제 (salesLog 승인 취소 시 사용) */
+  financeDelIncome(monthKey, incomeId) {
+    const d = this.financeGet(monthKey);
+    d.incomes = d.incomes.filter(r => r.id !== incomeId);
+    this.financeSet(monthKey, d);
+  },
+
+  /** 공용지출 항목 추가 (할부 분산 저장용) */
+  financeAddExpense(monthKey, fields) {
+    const d     = this.financeGet(monthKey);
+    const entry = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...fields };
+    d.expenses.push(entry);
+    this.financeSet(monthKey, d);
+    return entry;
+  },
+
+  /** 개인지출 항목 추가 (할부 분산 저장용) */
+  financeAddPrivateExpense(monthKey, fields) {
+    const d     = this.financeGet(monthKey);
+    const entry = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...fields };
+    d.privateExpenses.push(entry);
+    this.financeSet(monthKey, d);
+    return entry;
+  },
+
+  /* ════════════════════════════════════════════════════════
+     SALES LOG  (경로: salesLogs/{id})
+     매출일지 항목은 ID 키로 평탄하게 저장 (월별 쿼리는 client 필터)
+  ════════════════════════════════════════════════════════ */
+
+  salesLogsGetByMonth(month) {
+    return Object.values(this._d.salesLogs || {}).filter(e => e != null && e.month === month);
+  },
+
+  salesLogsGetById(id) {
+    return (this._d.salesLogs || {})[id] || null;
+  },
+
+  salesLogsAdd(entry) {
+    if (!this._d.salesLogs) this._d.salesLogs = {};
+    const item = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...entry };
+    this._d.salesLogs[item.id] = item;
+    this._fbSet(`salesLogs/${item.id}`, item);
+    return item;
+  },
+
+  salesLogsUpdate(id, patch) {
+    const existing = (this._d.salesLogs || {})[id];
+    if (!existing) return;
+    this._d.salesLogs[id] = { ...existing, ...patch };
+    this._fbUpdate(`salesLogs/${id}`, patch);
+  },
+
+  salesLogsDel(id) {
+    if (this._d.salesLogs) delete this._d.salesLogs[id];
+    this._fbSet(`salesLogs/${id}`, null);
   },
 
   /* ════════════════════════════════════════════════════════

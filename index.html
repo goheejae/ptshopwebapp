@@ -12,6 +12,8 @@
   <!-- Firebase compat SDK — 반드시 module 스크립트보다 먼저 로드되어야 합니다 -->
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
+  <!-- SheetJS — 엑셀 파일 파싱 (결산 시스템 업로드) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -71,6 +73,9 @@
     </button>
     <button class="nav-item" data-page="stats">
       <span class="nav-icon">📊</span> 통계
+    </button>
+    <button class="nav-item" data-page="salesLog">
+      <span class="nav-icon">📋</span> 매출일지
     </button>
   </nav>
 
