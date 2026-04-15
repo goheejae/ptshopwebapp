@@ -556,7 +556,12 @@ async function analyzeReceipt(file, prefix) {
       if (amount)  document.getElementById(`${prefix}-amount`).value  = amount;
       if (content) document.getElementById(`${prefix}-content`).value = content;
 
-      const filled = [date && '날짜', amount && '금액', content && '상호명'].filter(Boolean);
+      // 카드 영수증 감지 시 결제수단 자동 세팅
+      const isCard = /카드|신용카드|체크카드|승인번호|VISA|MASTER|AMEX|CARD/i.test(fullText);
+      const payEl  = document.getElementById(`${prefix}-pay`);
+      if (payEl && isCard) payEl.value = 'card';
+
+      const filled = [date && '날짜', amount && '금액', content && '상호명', isCard && '카드 감지'].filter(Boolean);
       if (filled.length) {
         // OCR로 폼이 채워졌음을 기록 → [추가] 버튼 클릭 시 isAuto: true 저장
         if (prefix === 'fe') feIsAuto = true;
@@ -629,7 +634,6 @@ export function renderFinance() {
         <div class="fin-form-field">
           <label>결제수단</label>
           <select id="fi-pay" class="fin-input">
-            <option value="card">카드</option>
             <option value="transfer">계좌이체</option>
           </select>
         </div>
@@ -674,18 +678,26 @@ export function renderFinance() {
           <label>금액 (원)</label>
           <input type="number" id="fe-amount" class="fin-input" placeholder="0" style="width:120px" min="0" />
         </div>
+        <div class="fin-form-field">
+          <label>결제수단</label>
+          <select id="fe-pay" class="fin-input">
+            <option value="cash">현금</option>
+            <option value="card">카드</option>
+            <option value="transfer">계좌이체</option>
+          </select>
+        </div>
         <input type="file" id="fe-scan-input" accept="image/*" capture="environment" style="display:none" />
         <button class="fin-scan-btn" id="fe-scan-btn">📷 영수증 스캔</button>
         <button class="btn btn-export" id="fe-add-btn">+ 추가</button>
       </div>
       <div class="fin-table-wrap">
         <table class="fin-table">
-          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th></th></tr></thead>
+          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th>결제수단</th><th></th></tr></thead>
           <tbody id="fe-tbody"></tbody>
           <tfoot><tr>
             <td style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
             <td></td>
-            <td colspan="2" id="fe-total"></td>
+            <td colspan="3" id="fe-total"></td>
           </tr></tfoot>
         </table>
       </div>
@@ -746,19 +758,19 @@ export function renderFinance() {
       </div>
     </div>
 
-    <!-- ④ 결산 리포트 -->
+    <!-- ④ 최종 보정 -->
+    <div class="fin-adjust-section">
+      <div class="fin-adjust-title">⚖️ 최종 보정</div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">장부에 적기 모호한 항목을 수동으로 조정합니다. 음수 입력 시 차감, 양수 입력 시 가산됩니다.</p>
+      <div class="fin-adjust-grid" id="fin-adjust-grid"></div>
+    </div>
+
+    <!-- ⑤ 결산 리포트 -->
     <div class="fin-report-section">
       <div class="fin-report-title">
         📊 월말 결산 리포트 — <span id="fin-report-month"></span>
       </div>
       <div class="fin-report-grid" id="fin-report-grid"></div>
-    </div>
-
-    <!-- ⑤ 최종 보정 -->
-    <div class="fin-adjust-section">
-      <div class="fin-adjust-title">⚖️ 최종 보정</div>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">장부에 적기 모호한 항목을 수동으로 조정합니다. 음수 입력 시 차감, 양수 입력 시 가산됩니다.</p>
-      <div class="fin-adjust-grid" id="fin-adjust-grid"></div>
     </div>
   `;
 
@@ -820,12 +832,13 @@ function renderFinanceData() {
 
   // ── 공용지출 테이블 ──
   document.getElementById('fe-tbody').innerHTML = expenses.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="4">등록된 공용지출이 없습니다</td></tr>'
+    ? '<tr class="fin-empty-row"><td colspan="5">등록된 공용지출이 없습니다</td></tr>'
     : expenses.map(r => `
         <tr class="fin-data-row" data-id="${escHtml(r.id)}" data-section="shared" title="클릭하여 수정">
           <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}${srcTag(r)}</td>
           <td>${escHtml(r.content || '—')}</td>
           <td style="font-weight:600">${fmtMoney(r.amount)}</td>
+          <td>${r.payMethod === 'card' ? '💳 카드' : r.payMethod === 'transfer' ? '🏦 계좌이체' : '💵 현금'}</td>
           <td><button class="fin-del" data-section="shared" data-id="${escHtml(r.id)}">✕</button></td>
         </tr>`
     ).join('');
@@ -915,8 +928,7 @@ function enterEditMode(row) {
       <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
       <td>
         <select class="fin-inline-input" name="payMethod">
-          <option value="card"     ${r.payMethod === 'card'     ? 'selected' : ''}>카드</option>
-          <option value="transfer" ${r.payMethod === 'transfer' ? 'selected' : ''}>계좌이체</option>
+          <option value="transfer" ${r.payMethod !== 'cash' ? 'selected' : ''}>계좌이체</option>
         </select>
       </td>
       <td>
@@ -932,6 +944,13 @@ function enterEditMode(row) {
       <td><input class="fin-inline-input" type="date" name="date" value="${escHtml(r.date)}" /></td>
       <td><input class="fin-inline-input" type="text" name="content" value="${escHtml(r.content || '')}" style="width:140px" /></td>
       <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
+      <td>
+        <select class="fin-inline-input" name="payMethod">
+          <option value="cash"     ${(r.payMethod || 'cash') === 'cash'     ? 'selected' : ''}>현금</option>
+          <option value="card"     ${r.payMethod === 'card'                 ? 'selected' : ''}>카드</option>
+          <option value="transfer" ${r.payMethod === 'transfer'             ? 'selected' : ''}>계좌이체</option>
+        </select>
+      </td>
       ${actionCells}`;
 
   } else {
@@ -1161,8 +1180,9 @@ function bindFinanceEvents() {
     feAddBusy = true;
     SM.addShared({
       date,
-      content: document.getElementById('fe-content').value.trim(),
+      content:   document.getElementById('fe-content').value.trim(),
       amount,
+      payMethod: document.getElementById('fe-pay').value,
       ...(feIsAuto && { isAuto: true }),
     });
     feIsAuto  = false;
@@ -1170,6 +1190,7 @@ function bindFinanceEvents() {
 
     document.getElementById('fe-amount').value  = '';
     document.getElementById('fe-content').value = '';
+    document.getElementById('fe-pay').value      = 'cash';
     renderFinanceData();
     showToast('공용지출을 추가했습니다');
   });
