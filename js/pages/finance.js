@@ -33,6 +33,7 @@ let incomeIsRenewal = false;    // 매출 입력 폼 토글
 let feIsAuto        = false;    // 공용지출 폼이 OCR로 채워졌는지
 let fpIsAuto        = false;    // 개인지출 폼이 OCR로 채워졌는지
 let fiIsAuto        = false;    // 매출 폼이 OCR로 채워졌는지
+let lastExcelKey    = null;     // 중복 업로드 방지 — "파일명::크기"
 
 if (finMonth < FIRST_NORMAL) finMonth = LEGACY_KEY;
 
@@ -310,6 +311,14 @@ function handleExcelUpload(file) {
     return;
   }
 
+  // 중복 업로드 방지 (파일명 + 크기가 같으면 거부)
+  const fileKey = `${file.name}::${file.size}`;
+  if (lastExcelKey === fileKey) {
+    showToast('이미 업로드한 파일입니다 (중복 방지)');
+    document.getElementById('fin-excel-input').value = '';
+    return;
+  }
+
   const reader = new FileReader();
   reader.onload = e => {
     try {
@@ -334,7 +343,15 @@ function handleExcelUpload(file) {
         return;
       }
 
-      let cntIncome = 0, cntExpense = 0;
+      // ── 기존 데이터 고유키(지문) 수집 ──
+      // 형식: "I::날짜::금액" (매출) / "E::날짜::항목::금액" (공용지출)
+      const existing = SM.get();
+      const existingKeys = new Set([
+        ...existing.incomes.map(r => `I::${r.date}::${r.amount}`),
+        ...existing.expenses.map(r => `E::${r.date}::${r.content || ''}::${r.amount}`),
+      ]);
+
+      let cntIncome = 0, cntExpense = 0, cntSkip = 0;
 
       rows.forEach(row => {
         const date = normalizeDate(row[dateCol]);
@@ -343,11 +360,14 @@ function handleExcelUpload(file) {
         if (incomeCol) {
           const amt = parseAmount(row[incomeCol]);
           if (amt > 0) {
+            const key = `I::${date}::${amt}`;
+            if (existingKeys.has(key)) { cntSkip++; return; }
             SM.addIncome({
               date, amount: amt,
               instructor: '', name: '', payMethod: 'transfer',
               isRenewal: false, source: 'excel', isAuto: true,
             });
+            existingKeys.add(key);   // 같은 파일 내 중복도 방지
             cntIncome++;
           }
         }
@@ -355,14 +375,26 @@ function handleExcelUpload(file) {
           const amt = parseAmount(row[expenseCol]);
           if (amt > 0) {
             const content = descCol ? String(row[descCol] || '').trim() : '';
+            const key = `E::${date}::${content}::${amt}`;
+            if (existingKeys.has(key)) { cntSkip++; return; }
             SM.addShared({ date, amount: amt, content, source: 'excel', isAuto: true });
+            existingKeys.add(key);
             cntExpense++;
           }
         }
       });
 
+      lastExcelKey = fileKey;
       renderFinanceData();
-      showToast(`업로드 완료 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건`);
+
+      const added = cntIncome + cntExpense;
+      if (added === 0 && cntSkip > 0) {
+        showToast(`모든 내역(${cntSkip}건)이 이미 등록되어 있습니다`);
+      } else if (cntSkip > 0) {
+        showToast(`중복 ${cntSkip}건 제외 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건 추가`);
+      } else {
+        showToast(`업로드 완료 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건`);
+      }
     } catch (err) {
       console.error('엑셀 파싱 오류:', err);
       showToast('엑셀 파싱 중 오류가 발생했습니다');
@@ -601,11 +633,6 @@ export function renderFinance() {
             <option value="transfer">계좌이체</option>
           </select>
         </div>
-        <div class="fin-form-field" id="fi-install-field">
-          <label>할부</label>
-          <input type="number" id="fi-install" class="fin-input" value="1" min="1" max="60" style="width:60px" />
-          <span style="font-size:11px;color:var(--text-muted)">개월 (1=일시불)</span>
-        </div>
         <div class="fin-form-field">
           <label>유형</label>
           <div class="fin-type-toggle">
@@ -613,8 +640,6 @@ export function renderFinance() {
             <button class="fin-toggle-btn" id="fi-type-renewal">재등록</button>
           </div>
         </div>
-        <input type="file" id="fi-scan-input" accept="image/*" capture="environment" style="display:none" />
-        <button class="fin-scan-btn" id="fi-scan-btn">📷 영수증 스캔</button>
         <button class="btn btn-export" id="fi-add-btn">+ 추가</button>
       </div>
       <div class="fin-table-wrap">
@@ -692,9 +717,17 @@ export function renderFinance() {
           </select>
         </div>
         <div class="fin-form-field">
+          <label>결제수단</label>
+          <select id="fp-pay" class="fin-input">
+            <option value="cash">현금</option>
+            <option value="card">카드</option>
+            <option value="transfer">계좌이체</option>
+          </select>
+        </div>
+        <div class="fin-form-field" id="fp-install-field" style="display:none">
           <label>할부</label>
           <input type="number" id="fp-install" class="fin-input" value="1" min="1" max="60" style="width:60px" />
-          <span style="font-size:11px;color:var(--text-muted)">개월 (1=일시불)</span>
+          <span style="font-size:11px;color:var(--text-muted)">개월</span>
         </div>
         <input type="file" id="fp-scan-input" accept="image/*" capture="environment" style="display:none" />
         <button class="fin-scan-btn" id="fp-scan-btn">📷 영수증 스캔</button>
@@ -702,12 +735,12 @@ export function renderFinance() {
       </div>
       <div class="fin-table-wrap">
         <table class="fin-table">
-          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th>결제자</th><th></th></tr></thead>
+          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th>결제수단</th><th>결제자</th><th></th></tr></thead>
           <tbody id="fp-tbody"></tbody>
           <tfoot><tr>
             <td style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
             <td></td>
-            <td colspan="3" id="fp-total"></td>
+            <td colspan="4" id="fp-total"></td>
           </tr></tfoot>
         </table>
       </div>
@@ -808,6 +841,7 @@ function renderFinanceData() {
           <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}</td>
           <td>${escHtml(r.content || '—')}</td>
           <td style="font-weight:600">${fmtMoney(r.amount)}${r.isInstallment ? ` <span class="fin-install-badge">${r.installLegacyCount ? `${r.installLegacyCount}/${r.installTotal}회 합산` : `${r.installNo}/${r.installTotal}`}</span>` : ''}</td>
+          <td>${r.payMethod === 'card' ? '💳 카드' : r.payMethod === 'transfer' ? '🏦 계좌이체' : '💵 현금'}</td>
           <td><span class="badge-${escHtml(r.payer)}">${r.payer === 'ko' ? '고희재' : '이건우'}</span></td>
           <td><button class="fin-del" data-section="private" data-id="${escHtml(r.id)}">✕</button></td>
         </tr>`
@@ -905,6 +939,13 @@ function enterEditMode(row) {
       <td><input class="fin-inline-input" type="date" name="date" value="${escHtml(r.date)}" /></td>
       <td><input class="fin-inline-input" type="text" name="content" value="${escHtml(r.content || '')}" style="width:140px" /></td>
       <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
+      <td>
+        <select class="fin-inline-input" name="payMethod">
+          <option value="cash"     ${(r.payMethod || 'cash') === 'cash'     ? 'selected' : ''}>현금</option>
+          <option value="card"     ${r.payMethod === 'card'                 ? 'selected' : ''}>카드</option>
+          <option value="transfer" ${r.payMethod === 'transfer'             ? 'selected' : ''}>계좌이체</option>
+        </select>
+      </td>
       <td>
         <select class="fin-inline-input" name="payer">
           <option value="ko"  ${r.payer === 'ko'  ? 'selected' : ''}>고희재</option>
@@ -1083,72 +1124,49 @@ function bindFinanceEvents() {
     document.getElementById('fi-type-new').classList.remove('active');
   });
 
-  // ── 결제수단 변경 → 할부 필드 표시/숨김 ──
-  document.getElementById('fi-pay').addEventListener('change', () => {
-    const isCard       = document.getElementById('fi-pay').value === 'card';
-    const installField = document.getElementById('fi-install-field');
-    if (installField) installField.style.display = isCard ? '' : 'none';
-    if (!isCard) document.getElementById('fi-install').value = '1';
-  });
-
-  // ── 매출 영수증 스캔 ──
-  document.getElementById('fi-scan-btn').addEventListener('click', () => {
-    document.getElementById('fi-scan-input').click();
-  });
-  document.getElementById('fi-scan-input').addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (file) analyzeReceipt(file, 'fi');
-    document.getElementById('fi-scan-input').value = '';
-  });
-
-  // ── 매출 추가 (할부 포함) ──
+  // ── 매출 추가 ──
+  let fiAddBusy = false;
   document.getElementById('fi-add-btn').addEventListener('click', () => {
+    if (fiAddBusy) return;
     const date      = document.getElementById('fi-date').value;
     const amount    = parseInt(document.getElementById('fi-amount').value, 10) || 0;
     const payMethod = document.getElementById('fi-pay').value;
-    const install   = payMethod === 'card'
-      ? (parseInt(document.getElementById('fi-install').value, 10) || 1)
-      : 1;
 
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
-    const base = {
+    fiAddBusy = true;
+    SM.addIncome({
+      date, amount,
       instructor: document.getElementById('fi-inst').value,
       name:       document.getElementById('fi-name').value.trim(),
       payMethod,
       isRenewal:  incomeIsRenewal,
-      ...(fiIsAuto && { isAuto: true }),
-    };
+    });
+    fiAddBusy = false;
+    showToast('매출을 추가했습니다');
 
-    if (payMethod === 'card' && install > 1) {
-      const monthlyAmt = Math.round(amount / install);
-      distributeInstallment(date, monthlyAmt, install, base);
-      showToast(`${install}개월 할부로 등록했습니다 (월 ${fmtMoney(monthlyAmt)})`);
-    } else {
-      SM.addIncome({ ...base, date, amount });
-      fiIsAuto = false;
-      showToast('매출을 추가했습니다');
-    }
-
-    document.getElementById('fi-amount').value  = '';
-    document.getElementById('fi-name').value    = '';
-    document.getElementById('fi-install').value = '1';
+    document.getElementById('fi-amount').value = '';
+    document.getElementById('fi-name').value   = '';
     renderFinanceData();
   });
 
   // ── 공용지출 추가 ──
+  let feAddBusy = false;
   document.getElementById('fe-add-btn').addEventListener('click', () => {
+    if (feAddBusy) return;
     const date   = document.getElementById('fe-date').value;
     const amount = parseInt(document.getElementById('fe-amount').value, 10) || 0;
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
+    feAddBusy = true;
     SM.addShared({
       date,
       content: document.getElementById('fe-content').value.trim(),
       amount,
       ...(feIsAuto && { isAuto: true }),
     });
-    feIsAuto = false;
+    feIsAuto  = false;
+    feAddBusy = false;
 
     document.getElementById('fe-amount').value  = '';
     document.getElementById('fe-content').value = '';
@@ -1156,20 +1174,35 @@ function bindFinanceEvents() {
     showToast('공용지출을 추가했습니다');
   });
 
-  // ── 개인지출 추가 (할부 포함) ──
+  // ── 결제수단 변경 → 할부 필드 표시/숨김 (개인지출) ──
+  document.getElementById('fp-pay').addEventListener('change', () => {
+    const isCard       = document.getElementById('fp-pay').value === 'card';
+    const installField = document.getElementById('fp-install-field');
+    if (installField) installField.style.display = isCard ? '' : 'none';
+    if (!isCard) document.getElementById('fp-install').value = '1';
+  });
+
+  // ── 개인지출 추가 (카드일 때만 할부) ──
+  let fpAddBusy = false;
   document.getElementById('fp-add-btn').addEventListener('click', () => {
-    const date    = document.getElementById('fp-date').value;
-    const amount  = parseInt(document.getElementById('fp-amount').value, 10) || 0;
-    const install = parseInt(document.getElementById('fp-install').value, 10) || 1;
+    if (fpAddBusy) return;
+    const date      = document.getElementById('fp-date').value;
+    const amount    = parseInt(document.getElementById('fp-amount').value, 10) || 0;
+    const payMethod = document.getElementById('fp-pay').value;
+    const install   = payMethod === 'card'
+      ? (parseInt(document.getElementById('fp-install').value, 10) || 1)
+      : 1;
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
+    fpAddBusy = true;
     const base = {
-      content: document.getElementById('fp-content').value.trim(),
-      payer:   document.getElementById('fp-payer').value,
+      content:   document.getElementById('fp-content').value.trim(),
+      payer:     document.getElementById('fp-payer').value,
+      payMethod,
       ...(fpIsAuto && { isAuto: true }),
     };
 
-    if (install > 1) {
+    if (payMethod === 'card' && install > 1) {
       const monthlyAmt = Math.round(amount / install);
       distributeExpenseInstallment(date, monthlyAmt, install, base, 'private');
       fpIsAuto = false;
@@ -1179,6 +1212,7 @@ function bindFinanceEvents() {
       fpIsAuto = false;
       showToast('개인지출을 추가했습니다');
     }
+    fpAddBusy = false;
 
     document.getElementById('fp-amount').value  = '';
     document.getElementById('fp-content').value = '';
