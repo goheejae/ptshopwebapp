@@ -1022,13 +1022,44 @@ body.sidebar-collapsed #main { margin-left: 0; }
 }
 .fin-adjust-input { width: 110px !important; }
 .fin-adjust-note  { flex: 1; min-width: 100px; }
-.fin-adjust-save  { flex-shrink: 0; padding: 6px 14px !important; font-size: 12px !important; }
-.fin-adjust-preview {
-  margin-top: 8px;
+.fin-adjust-add   { flex-shrink: 0; padding: 6px 14px !important; font-size: 12px !important; }
+.fin-adjust-total {
   font-size: 11px;
-  color: #f59e0b;
   font-weight: 600;
+  color: var(--text-muted);
+  margin-left: 4px;
 }
+.fin-adjust-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+.fin-adjust-item-val {
+  font-weight: 700;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+.fin-adjust-item-note {
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.fin-adj-del {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+  flex-shrink: 0;
+  opacity: 0.6;
+  transition: opacity var(--transition), color var(--transition);
+}
+.fin-adj-del:hover { opacity: 1; color: #ef4444; }
 .fin-adj-label {
   color: #f59e0b !important;
   font-style: italic;
@@ -1170,12 +1201,26 @@ body.sidebar-collapsed #main { margin-left: 0; }
   /* ════ 정산 폼 ════ */
   .fin-form {
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     padding: 12px 14px;
+    align-items: stretch;
   }
   .fin-form-field { flex-direction: row; align-items: center; gap: 8px; }
   .fin-form-field label { min-width: 56px; flex-shrink: 0; }
-  .fin-input { flex: 1; }
+  /* 인라인 style="width:Npx" 무력화 — 모바일에서 폼 잘림 방지 */
+  .fin-form .fin-input { flex: 1; width: auto !important; min-width: 0; }
+  /* 신규/재등록 토글 라인 정렬 */
+  .fin-form .fin-type-toggle { flex: 1; display: flex; gap: 6px; }
+  .fin-form .fin-type-toggle .fin-toggle-btn { flex: 1; min-height: 38px; }
+  /* 영수증 스캔 / + 추가 버튼 — 풀폭 + 충분한 터치 높이 */
+  .fin-form .fin-scan-btn,
+  .fin-form .btn-export {
+    align-self: stretch; min-height: 42px;
+  }
+  /* 섹션 헤더 padding 축소 */
+  .fin-section-header,
+  .fin-section-header-row { padding: 11px 14px; }
+  .fin-section-header-row > span { font-size: 13px; }
 
   /* 정산 테이블 — 가로 스크롤 컨테이너 */
   .fin-table-wrap {
@@ -1234,12 +1279,20 @@ body.sidebar-collapsed #main { margin-left: 0; }
   #page-content { padding: 10px 8px; }
   .dash-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .dash-card .dc-value { font-size: 17px; }
-  .fin-form-field { flex-direction: column; align-items: flex-start; }
+  .fin-form-field { flex-direction: column; align-items: stretch; gap: 4px; }
   .fin-form-field label { min-width: unset; }
+  .fin-form .fin-input { width: 100% !important; }
   .sched-toolbar { flex-direction: column; align-items: flex-start; }
   .sched-divider { display: none; }
   .fin-section { border-radius: var(--radius); }
   .fin-report-card { padding: 14px; }
+  .fin-final-val { font-size: 18px; }
+  /* 보정 카드 padding 축소 */
+  .fin-adjust-section { padding: 14px 12px; }
+  .fin-adjust-card { padding: 12px 14px; }
+  .fin-adjust-input { width: 100% !important; }
+  .fin-adjust-note { width: 100%; }
+  .fin-adjust-row { flex-wrap: wrap; }
 }
 
 /* ════════════════════════════════
@@ -1442,7 +1495,8 @@ body.sidebar-collapsed #main { margin-left: 0; }
   background: #555;
 }
 #canvas-wrapper canvas {
-  touch-action: none;
+  /* 기본: 손가락은 수직 스크롤, 펜은 그리기 (JS가 손가락 필기 ON 시 'none'으로 변경) */
+  touch-action: pan-y;
   cursor: crosshair;
 }
 

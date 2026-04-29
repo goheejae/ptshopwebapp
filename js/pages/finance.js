@@ -148,17 +148,19 @@ function distributeExpenseInstallment(startDate, monthlyAmt, total, base, sectio
   const legacyItems = items.filter(it => it.monthKey < FIRST_NORMAL);
   const normalItems = items.filter(it => it.monthKey >= FIRST_NORMAL);
 
-  if (legacyItems.length > 0) {
+  // 레거시 기간 회차는 합산하지 않고 각각 LEGACY_KEY에 개별 저장
+  // → LEGACY 뷰에서 11월/12월/1월/2월/3월 회차가 각각 표시됨
+  legacyItems.forEach(item => {
     addFn(LEGACY_KEY, {
       ...base,
-      date:               legacyItems[0].date,
-      amount:             legacyItems.length * monthlyAmt,
-      isInstallment:      true,
-      installTotal:       total,
-      installLegacyCount: legacyItems.length,
-      installGroupId:     groupId,
+      date:           item.date,
+      amount:         monthlyAmt,
+      isInstallment:  true,
+      installTotal:   total,
+      installNo:      item.no,
+      installGroupId: groupId,
     });
-  }
+  });
 
   normalItems.forEach(item => {
     addFn(item.monthKey, {
@@ -231,6 +233,14 @@ const SM = {
     this.save(d);
   },
 
+  // 구형(단일 객체) → 배열 정규화
+  _normalizeAdjs(raw) {
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    // 구형: { amount, note }
+    return (raw.amount || raw.note) ? [{ id: 'legacy', amount: raw.amount || 0, note: raw.note || '' }] : [];
+  },
+
   calc(inst, data) {
     const other        = inst === 'ko' ? 'lee' : 'ko';
     const myIncome     = data.incomes.filter(r => r.instructor === inst && !r.isRenewal).reduce((s, r) => s + r.amount, 0);
@@ -239,16 +249,26 @@ const SM = {
     const myPrivate    = data.privateExpenses.filter(r => r.payer === inst).reduce((s, r) => s + r.amount, 0);
     const otherPrivate = data.privateExpenses.filter(r => r.payer === other).reduce((s, r) => s + r.amount, 0);
     const final        = myIncome + myPrivate * 0.5 - otherPrivate * 0.5 - sharedTotal * 0.5;
-    const adjObj       = (data.adjustments || {})[inst] || {};
-    const adjAmt       = adjObj.amount || 0;
+    const adjItems     = this._normalizeAdjs((data.adjustments || {})[inst]);
+    const adjAmt       = adjItems.reduce((s, a) => s + (a.amount || 0), 0);
     return { myIncome, renewalAmt, sharedTotal, myPrivate, otherPrivate, final,
-             adj: { amount: adjAmt, note: adjObj.note || '' }, adjustedFinal: final + adjAmt };
+             adjItems, adjAmt, adjustedFinal: final + adjAmt };
   },
 
-  setAdjustment(inst, amount, note) {
+  addAdjustment(inst, amount, note) {
     const d = this.get();
     if (!d.adjustments) d.adjustments = {};
-    d.adjustments[inst] = { amount, note };
+    const cur = this._normalizeAdjs(d.adjustments[inst]);
+    cur.push({ id: genId(), amount, note });
+    d.adjustments[inst] = cur;
+    this.save(d);
+  },
+
+  delAdjustment(inst, id) {
+    const d = this.get();
+    if (!d.adjustments) return;
+    const cur = this._normalizeAdjs(d.adjustments[inst]);
+    d.adjustments[inst] = cur.filter(a => a.id !== id);
     this.save(d);
   },
 };
@@ -487,7 +507,7 @@ function extractReceiptData(text) {
  * DB 저장은 하지 않습니다 — 사용자가 확인 후 [추가] 버튼을 눌러야 저장됩니다.
  *
  * @param {File}   file   - 이미지 파일
- * @param {'fe'|'fp'} prefix - 공용지출('fe') 또는 개인지출('fp')
+ * @param {'fi'|'fe'|'fp'} prefix - 매출('fi'), 공용지출('fe'), 개인지출('fp')
  */
 async function analyzeReceipt(file, prefix) {
   const btn = document.getElementById(`${prefix}-scan-btn`);
@@ -556,10 +576,14 @@ async function analyzeReceipt(file, prefix) {
       if (amount)  document.getElementById(`${prefix}-amount`).value  = amount;
       if (content) document.getElementById(`${prefix}-content`).value = content;
 
-      // 카드 영수증 감지 시 결제수단 자동 세팅
+      // 카드 영수증 감지 시 결제수단 자동 세팅 + 할부 필드 표시
       const isCard = /카드|신용카드|체크카드|승인번호|VISA|MASTER|AMEX|CARD/i.test(fullText);
       const payEl  = document.getElementById(`${prefix}-pay`);
-      if (payEl && isCard) payEl.value = 'card';
+      if (payEl && isCard) {
+        payEl.value = 'card';
+        const installField = document.getElementById(`${prefix}-install-field`);
+        if (installField) installField.style.display = '';
+      }
 
       const filled = [date && '날짜', amount && '금액', content && '상호명', isCard && '카드 감지'].filter(Boolean);
       if (filled.length) {
@@ -644,6 +668,8 @@ export function renderFinance() {
             <button class="fin-toggle-btn" id="fi-type-renewal">재등록</button>
           </div>
         </div>
+        <input type="file" id="fi-scan-input" accept="image/*" capture="environment" style="display:none" />
+        <button class="fin-scan-btn" id="fi-scan-btn">📷 영수증 스캔</button>
         <button class="btn btn-export" id="fi-add-btn">+ 추가</button>
       </div>
       <div class="fin-table-wrap">
@@ -679,6 +705,14 @@ export function renderFinance() {
           <input type="number" id="fe-amount" class="fin-input" placeholder="0" style="width:120px" min="0" />
         </div>
         <div class="fin-form-field">
+          <label>결제자</label>
+          <select id="fe-payer" class="fin-input">
+            <option value="shared">공용</option>
+            <option value="ko">고희재 사비</option>
+            <option value="lee">이건우 사비</option>
+          </select>
+        </div>
+        <div class="fin-form-field">
           <label>결제수단</label>
           <select id="fe-pay" class="fin-input">
             <option value="cash">현금</option>
@@ -686,18 +720,23 @@ export function renderFinance() {
             <option value="transfer">계좌이체</option>
           </select>
         </div>
+        <div class="fin-form-field" id="fe-install-field" style="display:none">
+          <label>할부</label>
+          <input type="number" id="fe-install" class="fin-input" value="1" min="1" max="60" style="width:60px" />
+          <span style="font-size:11px;color:var(--text-muted)">개월</span>
+        </div>
         <input type="file" id="fe-scan-input" accept="image/*" capture="environment" style="display:none" />
         <button class="fin-scan-btn" id="fe-scan-btn">📷 영수증 스캔</button>
         <button class="btn btn-export" id="fe-add-btn">+ 추가</button>
       </div>
       <div class="fin-table-wrap">
         <table class="fin-table">
-          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th>결제수단</th><th></th></tr></thead>
+          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th>결제수단</th><th>결제자</th><th></th></tr></thead>
           <tbody id="fe-tbody"></tbody>
           <tfoot><tr>
             <td style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
             <td></td>
-            <td colspan="3" id="fe-total"></td>
+            <td colspan="4" id="fe-total"></td>
           </tr></tfoot>
         </table>
       </div>
@@ -832,13 +871,14 @@ function renderFinanceData() {
 
   // ── 공용지출 테이블 ──
   document.getElementById('fe-tbody').innerHTML = expenses.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="5">등록된 공용지출이 없습니다</td></tr>'
+    ? '<tr class="fin-empty-row"><td colspan="6">등록된 공용지출이 없습니다</td></tr>'
     : expenses.map(r => `
         <tr class="fin-data-row" data-id="${escHtml(r.id)}" data-section="shared" title="클릭하여 수정">
           <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}${srcTag(r)}</td>
           <td>${escHtml(r.content || '—')}</td>
-          <td style="font-weight:600">${fmtMoney(r.amount)}</td>
+          <td style="font-weight:600">${fmtMoney(r.amount)}${r.isInstallment ? ` <span class="fin-install-badge">${r.installLegacyCount ? `${r.installLegacyCount}/${r.installTotal}회 합산` : `${r.installNo}/${r.installTotal}`}</span>` : ''}</td>
           <td>${r.payMethod === 'card' ? '💳 카드' : r.payMethod === 'transfer' ? '🏦 계좌이체' : '💵 현금'}</td>
+          <td>${r.payer === 'ko' ? '<span class="badge-ko">고희재</span>' : r.payer === 'lee' ? '<span class="badge-lee">이건우</span>' : '공용'}</td>
           <td><button class="fin-del" data-section="shared" data-id="${escHtml(r.id)}">✕</button></td>
         </tr>`
     ).join('');
@@ -951,6 +991,13 @@ function enterEditMode(row) {
           <option value="transfer" ${r.payMethod === 'transfer'             ? 'selected' : ''}>계좌이체</option>
         </select>
       </td>
+      <td>
+        <select class="fin-inline-input" name="payer">
+          <option value="shared" ${(r.payer || 'shared') === 'shared' ? 'selected' : ''}>공용</option>
+          <option value="ko"     ${r.payer === 'ko'                    ? 'selected' : ''}>고희재 사비</option>
+          <option value="lee"    ${r.payer === 'lee'                   ? 'selected' : ''}>이건우 사비</option>
+        </select>
+      </td>
       ${actionCells}`;
 
   } else {
@@ -1038,14 +1085,14 @@ function renderReport(data) {
           <span class="fin-report-label">본인 개인지출 50% 보전</span>
           <span class="fin-report-val plus">+ ${fmtMoney(s.myPrivate * 0.5)}</span>
         </div>
-        ${s.adj.amount !== 0 ? `
+        ${s.adjItems.map(a => `
         <div class="fin-report-row">
-          <span class="fin-report-label fin-adj-label">보정 내역: ${escHtml(s.adj.note || '—')}</span>
-          <span class="fin-report-val ${s.adj.amount > 0 ? 'plus' : 'minus'}">${s.adj.amount > 0 ? '+ ' : '− '}${fmtMoney(Math.abs(s.adj.amount))}</span>
-        </div>` : ''}
+          <span class="fin-report-label fin-adj-label">보정: ${escHtml(a.note || '—')}</span>
+          <span class="fin-report-val ${a.amount >= 0 ? 'plus' : 'minus'}">${a.amount >= 0 ? '+ ' : '− '}${fmtMoney(Math.abs(a.amount))}</span>
+        </div>`).join('')}
         <div class="fin-divider"></div>
         <div class="fin-final-row">
-          <span class="fin-final-label">최종 수령액${s.adj.amount !== 0 ? ' (보정 포함)' : ''}</span>
+          <span class="fin-final-label">최종 수령액${s.adjAmt !== 0 ? ' (보정 포함)' : ''}</span>
           <span class="fin-final-val ${fcls}">${fmtMoney(s.adjustedFinal)}</span>
         </div>
       </div>`;
@@ -1060,33 +1107,49 @@ function renderAdjustmentSection(data) {
   if (!grid) return;
 
   grid.innerHTML = ['ko', 'lee'].map(inst => {
-    const name = inst === 'ko' ? '고희재' : '이건우';
-    const adj  = (data.adjustments || {})[inst] || { amount: 0, note: '' };
+    const name  = inst === 'ko' ? '고희재' : '이건우';
+    const items = SM._normalizeAdjs((data.adjustments || {})[inst]);
+    const total = items.reduce((s, a) => s + (a.amount || 0), 0);
+
+    const itemRows = items.map(a => `
+      <div class="fin-adjust-item" data-inst="${escHtml(inst)}" data-adj-id="${escHtml(a.id)}">
+        <span class="fin-adjust-item-val ${a.amount >= 0 ? 'plus' : 'minus'}">${a.amount >= 0 ? '+' : ''}${fmtMoney(a.amount)}</span>
+        <span class="fin-adjust-item-note">${escHtml(a.note || '—')}</span>
+        <button class="fin-adj-del" data-inst="${escHtml(inst)}" data-adj-id="${escHtml(a.id)}" title="삭제">✕</button>
+      </div>`).join('');
+
     return `
       <div class="fin-adjust-card">
-        <div class="fin-adjust-name">${name}</div>
+        <div class="fin-adjust-name">${name}${items.length > 0 ? ` <span class="fin-adjust-total">(합계 ${total >= 0 ? '+' : ''}${fmtMoney(total)})</span>` : ''}</div>
+        ${itemRows}
         <div class="fin-adjust-row">
           <input type="number" id="adj-${inst}-amount" class="fin-input fin-adjust-input"
-                 value="${adj.amount || 0}" placeholder="0 (음수 가능)" />
+                 placeholder="금액 (음수 가능)" />
           <input type="text" id="adj-${inst}-note" class="fin-input fin-adjust-note"
-                 value="${escHtml(adj.note || '')}" placeholder="보정 내용 (예: 현금 선지급)" />
-          <button class="btn btn-export fin-adjust-save" data-inst="${inst}">적용</button>
+                 placeholder="보정 내용 (예: 현금 선지급)" />
+          <button class="btn btn-export fin-adjust-add" data-inst="${inst}">+ 추가</button>
         </div>
-        ${adj.amount ? `<div class="fin-adjust-preview">현재 보정: ${adj.amount > 0 ? '+' : ''}${fmtMoney(adj.amount)}${adj.note ? ` (${escHtml(adj.note)})` : ''}</div>` : ''}
       </div>`;
   }).join('');
 
-  grid.querySelectorAll('.fin-adjust-save').forEach(btn => {
+  grid.querySelectorAll('.fin-adjust-add').forEach(btn => {
     btn.addEventListener('click', () => {
       const inst   = btn.dataset.inst;
-      const amount = parseInt(document.getElementById(`adj-${inst}-amount`).value, 10) || 0;
+      const amount = parseInt(document.getElementById(`adj-${inst}-amount`).value, 10);
       const note   = document.getElementById(`adj-${inst}-note`).value.trim();
-      SM.setAdjustment(inst, amount, note);
+      if (!amount) { showToast('금액을 입력하세요'); return; }
+      SM.addAdjustment(inst, amount, note);
       renderFinanceData();
       const name = inst === 'ko' ? '고희재' : '이건우';
-      showToast(amount !== 0
-        ? `${name} 보정 적용: ${amount > 0 ? '+' : ''}${fmtMoney(amount)}`
-        : `${name} 보정을 초기화했습니다`);
+      showToast(`${name} 보정 추가: ${amount > 0 ? '+' : ''}${fmtMoney(amount)}`);
+    });
+  });
+
+  grid.querySelectorAll('.fin-adj-del').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const { inst, adjId } = btn.dataset;
+      SM.delAdjustment(inst, adjId);
+      renderFinanceData();
     });
   });
 }
@@ -1111,6 +1174,16 @@ function bindFinanceEvents() {
   document.getElementById('fin-excel-input').addEventListener('change', e => {
     const file = e.target.files[0];
     if (file) handleExcelUpload(file);
+  });
+
+  // ── 영수증 스캔 — 매출 ──
+  document.getElementById('fi-scan-btn').addEventListener('click', () => {
+    document.getElementById('fi-scan-input').click();
+  });
+  document.getElementById('fi-scan-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) analyzeReceipt(file, 'fi');
+    document.getElementById('fi-scan-input').value = '';
   });
 
   // ── 영수증 스캔 — 공용지출 ──
@@ -1160,7 +1233,9 @@ function bindFinanceEvents() {
       name:       document.getElementById('fi-name').value.trim(),
       payMethod,
       isRenewal:  incomeIsRenewal,
+      ...(fiIsAuto && { isAuto: true }),
     });
+    fiIsAuto  = false;
     fiAddBusy = false;
     showToast('매출을 추가했습니다');
 
@@ -1169,30 +1244,53 @@ function bindFinanceEvents() {
     renderFinanceData();
   });
 
-  // ── 공용지출 추가 ──
+  // ── 결제수단 변경 → 할부 필드 표시/숨김 (공용지출) ──
+  document.getElementById('fe-pay').addEventListener('change', () => {
+    const isCard       = document.getElementById('fe-pay').value === 'card';
+    const installField = document.getElementById('fe-install-field');
+    if (installField) installField.style.display = isCard ? '' : 'none';
+    if (!isCard) document.getElementById('fe-install').value = '1';
+  });
+
+  // ── 공용지출 추가 (카드일 때만 할부) ──
   let feAddBusy = false;
   document.getElementById('fe-add-btn').addEventListener('click', () => {
     if (feAddBusy) return;
-    const date   = document.getElementById('fe-date').value;
-    const amount = parseInt(document.getElementById('fe-amount').value, 10) || 0;
+    const date      = document.getElementById('fe-date').value;
+    const amount    = parseInt(document.getElementById('fe-amount').value, 10) || 0;
+    const payMethod = document.getElementById('fe-pay').value;
+    const install   = payMethod === 'card'
+      ? (parseInt(document.getElementById('fe-install').value, 10) || 1)
+      : 1;
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
     feAddBusy = true;
-    SM.addShared({
-      date,
+    const base = {
       content:   document.getElementById('fe-content').value.trim(),
-      amount,
-      payMethod: document.getElementById('fe-pay').value,
+      payer:     document.getElementById('fe-payer').value,
+      payMethod,
       ...(feIsAuto && { isAuto: true }),
-    });
-    feIsAuto  = false;
+    };
+
+    if (payMethod === 'card' && install > 1) {
+      const monthlyAmt = Math.round(amount / install);
+      distributeExpenseInstallment(date, monthlyAmt, install, base, 'shared');
+      feIsAuto = false;
+      showToast(`${install}개월 할부로 등록했습니다 (월 ${fmtMoney(monthlyAmt)})`);
+    } else {
+      SM.addShared({ ...base, date, amount });
+      feIsAuto = false;
+      showToast('공용지출을 추가했습니다');
+    }
     feAddBusy = false;
 
     document.getElementById('fe-amount').value  = '';
     document.getElementById('fe-content').value = '';
     document.getElementById('fe-pay').value      = 'cash';
+    document.getElementById('fe-install').value  = '1';
+    const installField = document.getElementById('fe-install-field');
+    if (installField) installField.style.display = 'none';
     renderFinanceData();
-    showToast('공용지출을 추가했습니다');
   });
 
   // ── 결제수단 변경 → 할부 필드 표시/숨김 (개인지출) ──

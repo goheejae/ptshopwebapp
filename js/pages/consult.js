@@ -145,7 +145,7 @@ function _renderForm() {
       <input id="cf-date" type="date" value="${existing?.consultDate || todayStr}"
         style="border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;font-size:0.88rem"/>
       <span class="ctool-sep"></span>
-      <button class="ctool" id="tool-mode" title="손가락/마우스 드로잉 ON·OFF (펜슬은 항상 필기 가능)">✏️ 필기 시작</button>
+      <button class="ctool" id="tool-mode" title="OFF: 펜슬만 필기·손가락은 스크롤 / ON: 손가락도 필기">🖐 손가락 필기 OFF</button>
       <span class="ctool-sep"></span>
       <button class="ctool active" id="tool-black">✏️ 검정</button>
       <button class="ctool" id="tool-red" style="color:#dc2626">✏️ 빨강</button>
@@ -161,8 +161,8 @@ function _renderForm() {
       <span id="con-save-status" style="font-size:0.78rem;margin-left:4px;white-space:nowrap"></span>
       <button class="btn btn-export" id="con-save" style="margin-left:auto">💾 저장</button>
     </div>
-    <div id="canvas-wrapper" style="height:75vh;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;line-height:0">
-      <canvas id="con-canvas" style="display:block;width:100%;touch-action:none;cursor:crosshair"></canvas>
+    <div id="canvas-wrapper" style="height:75vh;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;line-height:0">
+      <canvas id="con-canvas" style="display:block;width:100%;cursor:crosshair"></canvas>
     </div>`;
 
   const bgSrc = existing?.canvasData || FORM_IMG_SRC;
@@ -204,26 +204,27 @@ function _renderForm() {
     };
   });
 
-  // ── 이동 모드 / 수동 필기 모드 전환 ──
-  const canvas   = document.getElementById('con-canvas');
-  let   drawMode = false;
+  // ── 손가락 필기 ON/OFF ─────────────────────────────────────
+  // 펜슬은 항상 필기 가능(palm rejection 적용).
+  // 손가락은 OFF: 페이지 스크롤 / ON: 필기 (touch-action 차이).
+  const canvas    = document.getElementById('con-canvas');
+  let   fingerOn  = false;
 
   function applyDrawMode(active) {
-    drawMode = active;
+    fingerOn = active;
     drawer.setManualDraw(active);
-    canvas.style.touchAction = active ? 'none' : 'auto';
-    canvas.style.cursor      = active ? 'crosshair' : 'default';
+    canvas.style.touchAction = active ? 'none' : 'pan-y';
     const btn = document.getElementById('tool-mode');
     if (active) {
-      btn.textContent = '🖐️ 이동 모드';
+      btn.textContent = '✏️ 손가락 필기 ON';
       btn.classList.add('active');
     } else {
-      btn.textContent = '✏️ 필기 시작';
+      btn.textContent = '🖐 손가락 필기 OFF';
       btn.classList.remove('active');
     }
   }
   applyDrawMode(false);
-  document.getElementById('tool-mode').onclick = () => applyDrawMode(!drawMode);
+  document.getElementById('tool-mode').onclick = () => applyDrawMode(!fingerOn);
 
   document.getElementById('con-undo').onclick  = () => drawer.undo();
   document.getElementById('con-clear').onclick = () => { if (confirm('캔버스를 초기화할까요?')) drawer.clear(); };
@@ -262,16 +263,17 @@ class CanvasDrawer {
   constructor(canvas, bgSrc) {
     this.c           = canvas;
     this.ctx         = canvas.getContext('2d');
-    this.tool        = 'pen';
-    this.color       = '#111111';
-    this.lineWidth   = 3;
-    this.alpha       = 1;
-    this.drawing     = false;
-    this.manualDraw  = false;
-    this.history     = [];
-    this.bgImg       = null;
-    this.ready       = false;
-    this.onStrokeEnd = null; // 획 완료 콜백 (자동 저장용)
+    this.tool            = 'pen';
+    this.color           = '#111111';
+    this.lineWidth       = 3;
+    this.alpha           = 1;
+    this.drawing         = false;
+    this.manualDraw      = false;
+    this.history         = [];
+    this.bgImg           = null;
+    this.ready           = false;
+    this.activePointerId = null; // palm rejection: 활성 포인터 외 무시
+    this.onStrokeEnd     = null; // 획 완료 콜백 (자동 저장용)
     this._load(bgSrc);
   }
 
@@ -373,6 +375,7 @@ class CanvasDrawer {
   _endStroke() {
     if (!this.drawing) return;
     this.drawing = false;
+    this.activePointerId = null;
     this.ctx.globalAlpha = 1;
     this._push();
     this.onStrokeEnd?.(); // 자동 저장 콜백 호출
@@ -384,22 +387,31 @@ class CanvasDrawer {
     c.addEventListener('pointerdown', e => {
       if (!this.ready) return;
       const isPen = e.pointerType === 'pen';
+      // 펜은 항상 그리기. 손가락/마우스는 manualDraw일 때만.
       if (!isPen && !this.manualDraw) return;
+      // 이미 다른 포인터로 그리는 중이면 무시 (palm 첫 접촉 차단)
+      if (this.drawing) return;
       e.preventDefault();
-      c.setPointerCapture(e.pointerId);
+      this.activePointerId = e.pointerId;
+      try { c.setPointerCapture(e.pointerId); } catch {}
       const { x, y } = this._pos(e);
       this._startStroke(x, y);
       this._draw(x, y);
     }, { passive: false });
 
     c.addEventListener('pointermove', e => {
-      if (!this.drawing) return;
+      // 활성 포인터의 이벤트만 처리 (palm/추가 손가락 무시)
+      if (!this.drawing || e.pointerId !== this.activePointerId) return;
       e.preventDefault();
       const { x, y } = this._pos(e);
       this._draw(x, y);
     }, { passive: false });
 
-    c.addEventListener('pointerup',     () => this._endStroke());
-    c.addEventListener('pointercancel', () => this._endStroke());
+    const finish = e => {
+      if (e.pointerId !== this.activePointerId) return;
+      this._endStroke();
+    };
+    c.addEventListener('pointerup',     finish);
+    c.addEventListener('pointercancel', finish);
   }
 }
