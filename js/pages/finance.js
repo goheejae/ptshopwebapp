@@ -243,8 +243,11 @@ const SM = {
 
   calc(inst, data) {
     const other        = inst === 'ko' ? 'lee' : 'ko';
-    const myIncome     = data.incomes.filter(r => r.instructor === inst && !r.isRenewal).reduce((s, r) => s + r.amount, 0);
-    const renewalAmt   = data.incomes.filter(r => r.instructor === inst &&  r.isRenewal).reduce((s, r) => s + r.amount, 0);
+    // instructor === 'shared' 매출은 두 강사가 50/50 으로 나눠 가집니다.
+    const sharedNew    = data.incomes.filter(r => r.instructor === 'shared' && !r.isRenewal).reduce((s, r) => s + r.amount, 0);
+    const sharedRenew  = data.incomes.filter(r => r.instructor === 'shared' &&  r.isRenewal).reduce((s, r) => s + r.amount, 0);
+    const myIncome     = data.incomes.filter(r => r.instructor === inst && !r.isRenewal).reduce((s, r) => s + r.amount, 0) + sharedNew * 0.5;
+    const renewalAmt   = data.incomes.filter(r => r.instructor === inst &&  r.isRenewal).reduce((s, r) => s + r.amount, 0) + sharedRenew * 0.5;
     const sharedTotal  = data.expenses.reduce((s, r) => s + r.amount, 0);
     const myPrivate    = data.privateExpenses.filter(r => r.payer === inst).reduce((s, r) => s + r.amount, 0);
     const otherPrivate = data.privateExpenses.filter(r => r.payer === other).reduce((s, r) => s + r.amount, 0);
@@ -321,6 +324,31 @@ function findCol(headers, ...keywords) {
 }
 
 /**
+ * 통장 입금 내역의 적요·내용 텍스트가 카드사 정산금 패턴에 해당하는지 추정합니다.
+ * 기본 'transfer'를 'card'로 자동 전환할 때 사용합니다.
+ *
+ * 매칭되는 예:
+ *   - "카드", "VAN", "PG", "이지페이" 직접 명시
+ *   - 카드사 한글명: 삼성카드/신한카드/현대카드/롯데카드/국민카드/비씨카드 등
+ *   - 카드사 영문 약어: SHC(신한)/SCH/BCC(BC)/HCC(현대)/LCC(롯데)/KBC
+ *   - 카드사명 + 정산번호: "삼성186109331", "KB10454143", "SHC125388074"
+ *   - 정산번호 + BC: "127704661BC"
+ */
+function detectCardIncome(memo, content) {
+  const text = `${memo || ''} ${content || ''}`.replace(/\s/g, '').toUpperCase();
+  if (!text) return false;
+  if (/카드|VAN|PG|이지페이/.test(text)) return true;
+  if (/(삼성|신한|현대|롯데|국민|농협|하나|우리|비씨|BC|KB|NH)카드/.test(text)) return true;
+  // 카드사 영문 약어 (단독 또는 숫자 인접)
+  if (/\b(SHC|SCH|BCC|HCC|LCC|KBC|NHC|HAC|WRC)\b/.test(text)) return true;
+  // 카드사 한글/영문 + 정산번호 (입금 컨텍스트에서 거의 항상 카드 정산)
+  if (/(^|\D)(삼성|신한|현대|롯데|농협|하나|우리|비씨|SHC|BCC|HCC|LCC|KBC|KB|NH|BC)\d{4,}/.test(text)) return true;
+  // 정산번호 + BC 접미 (BC카드)
+  if (/\d{4,}BC$/.test(text)) return true;
+  return false;
+}
+
+/**
  * 엑셀 파일을 파싱하여 현재 finMonth에 즉시 저장합니다.
  * 입금 열이 있는 행 → 매출(income)
  * 출금 열이 있는 행 → 공용지출(shared expense)
@@ -376,7 +404,9 @@ function handleExcelUpload(file) {
       const dateCol    = findCol(headers, '날짜', '거래일', '일자', 'date');
       const incomeCol  = findCol(headers, '입금');
       const expenseCol = findCol(headers, '출금');
-      const descCol    = findCol(headers, '적요', '거래내용', '내용', '메모', 'desc');
+      // 적요(거래종류 — 펌뱅킹/인터넷뱅킹/CMS 등) · 내용(거래상대 — 쿠팡/한국전력공사 등) 을 분리해서 받습니다.
+      const memoCol    = findCol(headers, '적요');
+      const contentCol = findCol(headers, '내용', '거래내용', '메모', 'desc');
 
       if (!dateCol) {
         showToast('날짜 컬럼을 찾을 수 없습니다 (날짜 / 거래일 / 일자)');
@@ -401,15 +431,20 @@ function handleExcelUpload(file) {
         const date = normalizeDate(row[dateCol]);
         if (!date) return;
 
+        const memo    = memoCol    ? String(row[memoCol]    || '').trim() : '';
+        const content = contentCol ? String(row[contentCol] || '').trim() : '';
+
         if (incomeCol) {
           const amt = parseAmount(row[incomeCol]);
           if (amt > 0) {
-            const desc = descCol ? String(row[descCol] || '').trim() : '';
             const key = `I::${date}::${amt}`;
             if (existingKeys.has(key)) { cntSkip++; return; }
+            // 카드사 정산금 패턴이면 결제수단을 'card'로 자동 전환
+            const payMethod = detectCardIncome(memo, content) ? 'card' : 'transfer';
             SM.addIncome({
               date, amount: amt,
-              instructor: '', name: desc, payMethod: 'transfer',
+              instructor: '', name: '', payMethod,
+              memo, content,
               isRenewal: false, source: 'excel', isAuto: true,
             });
             existingKeys.add(key);   // 같은 파일 내 중복도 방지
@@ -419,10 +454,9 @@ function handleExcelUpload(file) {
         if (expenseCol) {
           const amt = parseAmount(row[expenseCol]);
           if (amt > 0) {
-            const content = descCol ? String(row[descCol] || '').trim() : '';
             const key = `E::${date}::${content}::${amt}`;
             if (existingKeys.has(key)) { cntSkip++; return; }
-            SM.addShared({ date, amount: amt, content, source: 'excel', isAuto: true });
+            SM.addShared({ date, amount: amt, content, memo, source: 'excel', isAuto: true });
             existingKeys.add(key);
             cntExpense++;
           }
@@ -674,6 +708,9 @@ export function renderFinance() {
           <select id="fi-inst" class="fin-input">
             <option value="ko">고희재</option>
             <option value="lee">이건우</option>
+            <option value="shared">공용</option>
+            <option value="mj">민정</option>
+            <option value="jy">진영</option>
           </select>
         </div>
         <div class="fin-form-field">
@@ -688,6 +725,7 @@ export function renderFinance() {
           <label>결제수단</label>
           <select id="fi-pay" class="fin-input">
             <option value="transfer">계좌이체</option>
+            <option value="card">카드</option>
           </select>
         </div>
         <div class="fin-form-field">
@@ -704,11 +742,11 @@ export function renderFinance() {
       <div class="fin-table-wrap">
         <table class="fin-table">
           <thead><tr>
-            <th>날짜</th><th>강사</th><th>회원명</th><th>금액</th><th>결제수단</th><th>유형</th><th></th>
+            <th>날짜</th><th>강사</th><th>회원명</th><th>적요</th><th>내용</th><th>금액</th><th>결제수단</th><th>유형</th><th></th>
           </tr></thead>
           <tbody id="fi-tbody"></tbody>
           <tfoot><tr>
-            <td colspan="3" style="text-align:right;font-size:12px;color:var(--text-muted)">정산 포함 합계</td>
+            <td colspan="5" style="text-align:right;font-size:12px;color:var(--text-muted)">정산 포함 합계</td>
             <td colspan="4" id="fi-total"></td>
           </tr></tfoot>
         </table>
@@ -760,10 +798,10 @@ export function renderFinance() {
       </div>
       <div class="fin-table-wrap">
         <table class="fin-table">
-          <thead><tr><th>날짜</th><th>내용</th><th>금액</th><th>결제수단</th><th>결제자</th><th></th></tr></thead>
+          <thead><tr><th>날짜</th><th>적요</th><th>내용</th><th>금액</th><th>결제수단</th><th>결제자</th><th></th></tr></thead>
           <tbody id="fe-tbody"></tbody>
           <tfoot><tr>
-            <td style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
+            <td colspan="2" style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
             <td></td>
             <td colspan="4" id="fe-total"></td>
           </tr></tfoot>
@@ -871,19 +909,27 @@ function renderFinanceData() {
   }
 
   // ── 매출 테이블 ──
-  const settlableTotal = incomes.filter(r => !r.isRenewal).reduce((s, r) => s + r.amount, 0);
+  // 민정(mj)·진영(jy) 매출은 정산 대상에서 완전 제외
+  const isExcluded     = r => r.instructor === 'mj' || r.instructor === 'jy';
+  const settlableTotal = incomes.filter(r => !r.isRenewal && !isExcluded(r)).reduce((s, r) => s + r.amount, 0);
   const srcTag = r => r.source && r.source !== 'manual'
     ? ` <span style="font-size:10px;color:var(--text-muted)">[${escHtml(r.source)}]</span>` : '';
 
   document.getElementById('fi-tbody').innerHTML = incomes.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="7">등록된 매출이 없습니다</td></tr>'
+    ? '<tr class="fin-empty-row"><td colspan="9">등록된 매출이 없습니다</td></tr>'
     : incomes.map(r => `
         <tr class="fin-data-row${r.isRenewal ? ' fi-renewal-row' : ''}" data-id="${escHtml(r.id)}" data-section="income" title="클릭하여 수정">
           <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}${srcTag(r)}</td>
-          <td>${r.instructor
-            ? `<span class="badge-${escHtml(r.instructor)}">${r.instructor === 'ko' ? '고희재' : '이건우'}</span>`
-            : '<span style="color:var(--text-muted);font-size:11px">—</span>'}</td>
-          <td>${escHtml(r.name || '—')}</td>
+          <td>${
+            r.instructor === 'ko'     ? '<span class="badge-ko">고희재</span>'  :
+            r.instructor === 'lee'    ? '<span class="badge-lee">이건우</span>' :
+            r.instructor === 'shared' ? '<span class="badge-shared">공용</span>' :
+            r.instructor === 'mj'     ? '<span class="badge-mj">민정</span>'    :
+            r.instructor === 'jy'     ? '<span class="badge-jy">진영</span>'    : ''
+          }</td>
+          <td>${escHtml(r.name || '')}</td>
+          <td style="color:var(--text-muted);font-size:12px">${escHtml(r.memo || '')}</td>
+          <td>${escHtml(r.content || '')}</td>
           <td style="font-weight:600">${fmtMoney(r.amount)}</td>
           <td>${r.payMethod === 'card' ? '카드' : '계좌이체'}${r.isInstallment ? ` <span class="fin-install-badge">${r.installLegacyCount ? `${r.installLegacyCount}/${r.installTotal}회 합산` : `${r.installNo}/${r.installTotal}`}</span>` : ''}</td>
           <td>
@@ -900,10 +946,11 @@ function renderFinanceData() {
 
   // ── 공용지출 테이블 ──
   document.getElementById('fe-tbody').innerHTML = expenses.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="6">등록된 공용지출이 없습니다</td></tr>'
+    ? '<tr class="fin-empty-row"><td colspan="7">등록된 공용지출이 없습니다</td></tr>'
     : expenses.map(r => `
         <tr class="fin-data-row" data-id="${escHtml(r.id)}" data-section="shared" title="클릭하여 수정">
           <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}${srcTag(r)}</td>
+          <td style="color:var(--text-muted);font-size:12px">${escHtml(r.memo || '—')}</td>
           <td>${escHtml(r.content || '—')}</td>
           <td style="font-weight:600">${fmtMoney(r.amount)}${r.isInstallment ? ` <span class="fin-install-badge">${r.installLegacyCount ? `${r.installLegacyCount}/${r.installTotal}회 합산` : `${r.installNo}/${r.installTotal}`}</span>` : ''}</td>
           <td>${r.payMethod === 'card' ? '💳 카드' : r.payMethod === 'transfer' ? '🏦 계좌이체' : '💵 현금'}</td>
@@ -996,16 +1043,22 @@ function enterEditMode(row) {
       <td><input class="fin-inline-input" type="date" name="date" value="${escHtml(r.date)}" /></td>
       <td>
         <select class="fin-inline-input" name="instructor">
-          <option value=""   ${!r.instructor ? 'selected' : ''}>(미지정)</option>
-          <option value="ko"  ${r.instructor === 'ko'  ? 'selected' : ''}>고희재</option>
-          <option value="lee" ${r.instructor === 'lee' ? 'selected' : ''}>이건우</option>
+          <option value=""       ${!r.instructor                 ? 'selected' : ''}>(미지정)</option>
+          <option value="ko"     ${r.instructor === 'ko'         ? 'selected' : ''}>고희재</option>
+          <option value="lee"    ${r.instructor === 'lee'        ? 'selected' : ''}>이건우</option>
+          <option value="shared" ${r.instructor === 'shared'     ? 'selected' : ''}>공용</option>
+          <option value="mj"     ${r.instructor === 'mj'         ? 'selected' : ''}>민정 (정산 제외)</option>
+          <option value="jy"     ${r.instructor === 'jy'         ? 'selected' : ''}>진영 (정산 제외)</option>
         </select>
       </td>
       <td><input class="fin-inline-input" type="text" name="name" value="${escHtml(r.name || '')}" style="width:80px" /></td>
+      <td><input class="fin-inline-input" type="text" name="memo" value="${escHtml(r.memo || '')}" placeholder="적요" style="width:90px" /></td>
+      <td><input class="fin-inline-input" type="text" name="content" value="${escHtml(r.content || '')}" placeholder="내용" style="width:120px" /></td>
       <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
       <td>
         <select class="fin-inline-input" name="payMethod">
-          <option value="transfer" ${r.payMethod !== 'cash' ? 'selected' : ''}>계좌이체</option>
+          <option value="transfer" ${r.payMethod !== 'card' ? 'selected' : ''}>계좌이체</option>
+          <option value="card"     ${r.payMethod === 'card' ? 'selected' : ''}>카드</option>
         </select>
       </td>
       <td>
@@ -1019,6 +1072,7 @@ function enterEditMode(row) {
   } else if (section === 'shared') {
     row.innerHTML = `
       <td><input class="fin-inline-input" type="date" name="date" value="${escHtml(r.date)}" /></td>
+      <td><input class="fin-inline-input" type="text" name="memo" value="${escHtml(r.memo || '')}" placeholder="적요" style="width:90px" /></td>
       <td><input class="fin-inline-input" type="text" name="content" value="${escHtml(r.content || '')}" style="width:140px" /></td>
       <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
       <td>
