@@ -974,12 +974,16 @@ function renderFinanceData() {
 // 인라인 편집 모드
 // ════════════════════════════════
 function enterEditMode(row) {
+  // 이미 편집 중이면 무시 — 폼 내부 select/input 클릭의 row 버블링으로 인한 재진입 방지
+  if (row.dataset.editing === '1') return;
   const section = row.dataset.section;
   const id      = row.dataset.id;
   const data    = SM.get();
   const key     = section === 'income' ? 'incomes' : section === 'shared' ? 'expenses' : 'privateExpenses';
   const r       = data[key].find(x => x.id === id);
   if (!r) return;
+  // innerHTML 교체 전에 플래그를 켜둬야 select 첫 클릭의 버블링도 막힙니다.
+  row.dataset.editing = '1';
 
   const actionCells = `
     <td style="white-space:nowrap">
