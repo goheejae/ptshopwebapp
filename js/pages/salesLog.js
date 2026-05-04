@@ -519,18 +519,13 @@ function bindRowEvents() {
 // 확정 로직
 // ════════════════════════════════
 
-/** 은행 기록 매칭으로 승인 */
+/** 은행 기록 매칭으로 승인 — finance.income 의 회원명/강사/유형은 손대지 않음 (link 만 기록) */
 function confirmWithMatch(slId, matchMonth, matchIncomeId, bankAmt) {
   const entry = DB.salesLogsGetById(slId);
   if (!entry) return;
 
-  // finance income에 매출일지 연결 정보 기록
-  DB.financeUpdateIncome(matchMonth, matchIncomeId, {
-    salesLogId:  slId,
-    instructor:  entry.instructor,
-    name:        entry.memberName,
-    isRenewal:   entry.type === 'renewal',
-  });
+  // finance income 에는 link 메타데이터(salesLogId)만 — 실제 데이터(이름·강사·유형)는 변경 금지
+  DB.financeUpdateIncome(matchMonth, matchIncomeId, { salesLogId: slId });
 
   // 매출일지 확정
   DB.salesLogsUpdate(slId, {
@@ -552,17 +547,11 @@ function confirmManual(slId) {
   const entry = DB.salesLogsGetById(slId);
   if (!entry) return;
 
-  // (1) 이미 자동 매칭된 finance.income 이 있으면 그걸 그대로 사용
+  // (1) 이미 자동 매칭된 finance.income 이 있으면 그걸 그대로 사용 (finance 데이터는 변경 금지)
   if (entry.linkedId && entry.linkedMonth) {
     const finData   = DB.financeGet(entry.linkedMonth);
     const linkedInc = (finData.incomes || []).find(i => i.id === entry.linkedId);
     if (linkedInc) {
-      // sl 정보를 finance income 에 한번 더 동기화 (수동 편집 반영)
-      DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, {
-        name:       entry.memberName,
-        instructor: entry.instructor,
-        isRenewal:  entry.type === 'renewal',
-      });
       DB.salesLogsUpdate(slId, { status: 'confirmed' });
       renderSalesLogData();
       showToast(`✓ 확정 — 매칭 입금 ${fmtMoney(linkedInc.amount)} 그대로 사용`);
@@ -596,10 +585,7 @@ function confirmManual(slId) {
 /**
  * 잘못된 자동 매칭을 풀어 sl 을 진짜 pending 상태로 되돌립니다.
  *  - sl: linkedMonth/linkedId/linkedAmount 클리어
- *  - finance.income: salesLogId 제거 + (자동 채워졌던 회원명·강사·재등록 여부 초기화)
- *
- * source==='excel' 이거나 isAuto 인 finance.income 은 회원/강사를 비웁니다.
- * 사용자가 직접 입력한 finance.income 은 보존 — sl 만 분리.
+ *  - finance.income: salesLogId 만 제거 (회원명·강사·유형 등 데이터는 절대 변경 안 함)
  */
 function unmatchSalesLog(slId) {
   const entry = DB.salesLogsGetById(slId);
@@ -607,13 +593,8 @@ function unmatchSalesLog(slId) {
 
   const finData   = DB.financeGet(entry.linkedMonth);
   const linkedInc = (finData.incomes || []).find(i => i.id === entry.linkedId);
-
   if (linkedInc) {
-    const isAutoImported = linkedInc.isAuto || linkedInc.source === 'excel';
-    DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, {
-      salesLogId: null,
-      ...(isAutoImported && { name: '', instructor: '', isRenewal: false }),
-    });
+    DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, { salesLogId: null });
   }
 
   DB.salesLogsUpdate(slId, {
@@ -637,16 +618,11 @@ function cancelConfirm(slId) {
 
     if (income) {
       if (income.source === 'saleslog') {
-        // 수동 생성 항목 → 완전 삭제
+        // sl 에서 신규 생성한 income → 완전 삭제 (sl 자체가 sole owner)
         DB.financeDelIncome(entry.linkedMonth, entry.linkedId);
       } else {
-        // 엑셀/기존 항목 → 연결만 해제, 강사/회원명 초기화
-        DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, {
-          salesLogId: null,
-          instructor:  '',
-          name:        '',
-          isRenewal:   false,
-        });
+        // 엑셀/finance 에서 만들어진 income → link 만 해제, 회원명·강사·유형은 결산 데이터 그대로 보존
+        DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, { salesLogId: null });
       }
     }
   }
@@ -771,16 +747,11 @@ function bindSalesLogEvents() {
       linkedAmount: null,
     });
 
-    // ── 자동 매칭: 이미 결산에 등록된 finance.income 중 매칭 후보 찾아서 즉시 link ──
-    // (회원명·강사 비어있던 finance income 에 sl 정보 채움 — 상태는 pending 유지)
+    // ── 자동 매칭: 결산에 등록된 finance.income 과 link 만 ──
+    // (finance 의 회원명·강사·유형은 절대 변경 안 함. sl 측에서만 link 정보 보유)
     const finMatch = findUnlinkedFinanceIncome(slEntry);
     if (finMatch) {
-      DB.financeUpdateIncome(finMatch.month, finMatch.income.id, {
-        salesLogId: slEntry.id,
-        name:       slEntry.memberName,
-        instructor: slEntry.instructor,
-        isRenewal:  slEntry.type === 'renewal',
-      });
+      DB.financeUpdateIncome(finMatch.month, finMatch.income.id, { salesLogId: slEntry.id });
       DB.salesLogsUpdate(slEntry.id, {
         linkedMonth:  finMatch.month,
         linkedId:     finMatch.income.id,

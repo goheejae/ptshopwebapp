@@ -557,17 +557,16 @@ function handleExcelUpload(file) {
             // 카드사 정산금 패턴이면 결제수단을 'card'로 자동 전환
             const payMethod = detectCardIncome(memo, content) ? 'card' : 'transfer';
 
-            // 1) 매출일지 pending 항목 중 매칭 후보 탐색
+            // 1) 매출일지 pending 항목 중 매칭 후보 탐색 (link 만 — finance 데이터는 sl 정보로 덮지 않음)
             const slMatch = findMatchingPendingSalesLog({ date, amount: amt, name: '' });
 
-            // 2) 매칭됐으면 회원명·강사·재등록 여부를 매출일지에서 가져와서 finance income 에 채움
             const newIncome = SM.addIncome({
               date, amount: amt,
-              instructor: slMatch ? slMatch.instructor : '',
-              name:       slMatch ? slMatch.memberName : '',
+              instructor: '',          // 매칭 여부와 무관 — 결산은 통장 데이터 그대로, 분류는 사용자 수동
+              name:       '',
               payMethod,
               memo, content,
-              isRenewal:  slMatch ? (slMatch.type === 'renewal') : false,
+              isRenewal:  false,
               source: 'excel', isAuto: true,
               ...(slMatch && { salesLogId: slMatch.id }),
             });
@@ -1544,24 +1543,21 @@ function bindFinanceEvents() {
     const inst       = document.getElementById('fi-inst').value;
     const memberName = document.getElementById('fi-name').value.trim();
 
-    // 1) 매출일지 pending 항목 중 매칭 후보부터 탐색 — 있으면 회원명·강사·유형을 sl 에서 가져옴
+    // 매출일지 pending 항목 중 매칭 후보 탐색 — finance 입력값은 폼 그대로, sl 데이터는 사용 안 함
     const slMatch = findMatchingPendingSalesLog({ date, amount, name: memberName });
-    const usedInst       = slMatch ? slMatch.instructor                    : inst;
-    const usedName       = slMatch ? slMatch.memberName                    : memberName;
-    const usedIsRenewal  = slMatch ? (slMatch.type === 'renewal')          : incomeIsRenewal;
 
     const newIncome = SM.addIncome({
       date, amount,
-      instructor: usedInst,
-      name:       usedName,
+      instructor: inst,
+      name:       memberName,
       payMethod,
-      isRenewal:  usedIsRenewal,
+      isRenewal:  incomeIsRenewal,
       ...(fiIsAuto && { isAuto: true }),
       ...(slMatch && { salesLogId: slMatch.id }),
     });
 
     if (slMatch) {
-      // 기존 매출일지 entry 와 link 만 (상태는 pending 유지)
+      // 기존 매출일지 entry 와 link 만 (sl 데이터는 그대로 두고 link 정보만 동기화)
       DB.salesLogsUpdate(slMatch.id, {
         linkedMonth:  finMonth,
         linkedId:     newIncome.id,
