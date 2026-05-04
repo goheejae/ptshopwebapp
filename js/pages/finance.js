@@ -342,13 +342,37 @@ function handleExcelUpload(file) {
   const reader = new FileReader();
   reader.onload = e => {
     try {
-      const wb   = XLSX.read(e.target.result, { type: 'binary', cellDates: true });
-      const ws   = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      // type:'array' 는 BIFF(.xls) · OOXML(.xlsx) · CSV · HTML 위장 .xls 까지 모두 자동 판별합니다.
+      const wb     = XLSX.read(new Uint8Array(e.target.result), { type: 'array', cellDates: true });
+      const ws     = wb.Sheets[wb.SheetNames[0]];
+      // header:1 → 배열의 배열로 받아서 헤더 행을 직접 탐색합니다.
+      // (한국 은행 거래내역은 1~5행에 "거래내역조회", "조회기간: …" 같은 안내 행이 깔려 있고
+      //  그 아래에 진짜 헤더가 있는 경우가 많아 첫 행을 헤더로 쓰면 컬럼을 못 찾습니다.)
+      const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      if (!matrix.length) { showToast('엑셀에 데이터가 없습니다'); return; }
 
-      if (!rows.length) { showToast('엑셀에 데이터가 없습니다'); return; }
+      // 날짜 + (입금 또는 출금) 키워드를 모두 가진 첫 행 = 진짜 헤더
+      const isHeaderRow = arr => {
+        const cells = arr.map(c => String(c ?? '').replace(/\s/g, '').toLowerCase());
+        const hasDate = cells.some(c => /날짜|거래일|일자|date/.test(c));
+        const hasIO   = cells.some(c => c.includes('입금')) || cells.some(c => c.includes('출금'));
+        return hasDate && hasIO;
+      };
+      const headerIdx = matrix.findIndex(isHeaderRow);
+      if (headerIdx < 0) {
+        console.warn('[엑셀] 헤더 후보 행 미검출 — 상위 10행:', matrix.slice(0, 10));
+        showToast('헤더 행을 찾을 수 없습니다 (날짜 + 입금/출금 컬럼 필요)');
+        return;
+      }
 
-      const headers    = Object.keys(rows[0]);
+      const headers = matrix[headerIdx].map(h => String(h ?? '').trim());
+      // 헤더 다음 행부터 데이터로 간주, 객체 배열로 변환
+      const rows = matrix.slice(headerIdx + 1).map(arr => {
+        const obj = {};
+        headers.forEach((h, i) => { obj[h] = arr[i] ?? ''; });
+        return obj;
+      });
+
       const dateCol    = findCol(headers, '날짜', '거래일', '일자', 'date');
       const incomeCol  = findCol(headers, '입금');
       const expenseCol = findCol(headers, '출금');
@@ -417,12 +441,16 @@ function handleExcelUpload(file) {
       }
     } catch (err) {
       console.error('엑셀 파싱 오류:', err);
-      showToast('엑셀 파싱 중 오류가 발생했습니다');
+      showToast(`엑셀 파싱 실패: ${err.message || '알 수 없는 오류'}`);
     }
     // 같은 파일 재업로드도 가능하도록 input 초기화
     document.getElementById('fin-excel-input').value = '';
   };
-  reader.readAsBinaryString(file);
+  reader.onerror = () => {
+    showToast('파일 읽기 실패 — 파일이 손상되었거나 접근할 수 없습니다');
+    document.getElementById('fin-excel-input').value = '';
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 // ════════════════════════════════
