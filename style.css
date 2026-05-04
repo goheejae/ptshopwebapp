@@ -758,6 +758,27 @@ body.sidebar-collapsed #main { margin-left: 0; }
   border-left: 3px solid var(--accent);
   background: #f0f4ff;
 }
+/* 등록 완료된 항목 — 연한 초록 배경 */
+.ot-item.ot-registered {
+  background: #ecfdf5;
+  border-left: 3px solid #16a34a;
+}
+.ot-item.ot-registered .todo-content { color: #14532d; }
+
+/* 등록/미등록 토글 버튼 */
+.ot-reg-toggle {
+  border: 1.5px solid #d1d5db; background: #fff; color: #6b7280;
+  padding: 4px 10px; font-size: 0.78rem; font-weight: 700;
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
+  transition: background var(--transition-fast), color var(--transition-fast),
+              border-color var(--transition-fast), transform var(--transition-fast);
+}
+.ot-reg-toggle:hover { transform: scale(1.04); }
+.ot-reg-toggle.is-registered {
+  background: #16a34a; color: #fff; border-color: #16a34a;
+  box-shadow: 0 1px 3px rgba(22,163,74,.35);
+}
+.ot-reg-toggle.is-registered:hover { background: #15803d; }
 
 /* ════════════════════════════════
    FINANCE STYLES
@@ -1133,9 +1154,12 @@ body.sidebar-collapsed #main { margin-left: 0; }
 .fin-type-toggle {
   display: flex; border: 1.5px solid var(--border);
   border-radius: var(--radius-sm); overflow: hidden;
+  white-space: nowrap;            /* PC 에서 '재등록' 줄바꿈 방지 */
 }
 .fin-toggle-btn {
   flex: 1; padding: 6px 12px; font-size: 12px; font-weight: 600;
+  white-space: nowrap;            /* 버튼 라벨 줄바꿈 방지 */
+  min-width: max-content;
   border: none; background: transparent; cursor: pointer; color: var(--text-muted);
   transition: background var(--transition-fast), color var(--transition-fast);
 }
@@ -1207,6 +1231,14 @@ body.sidebar-collapsed #main { margin-left: 0; }
   transform: scale(1.06);
   box-shadow: 0 2px 6px rgba(0,0,0,.12);
 }
+
+/* ── 모든 .btn 버튼: 라벨 줄바꿈 방지 (PC 에서 '재등록' 같은 3글자 버튼이 2줄로 깨지는 현상 차단) ── */
+.btn { white-space: nowrap; }
+/* 필터 바 — 좁은 화면에서 자연스럽게 줄바꿈, 단 개별 버튼은 자르지 않음 */
+.todo-filter-bar { flex-wrap: wrap; row-gap: 6px; }
+/* 폼 필드 라벨/입력도 폭 부족 시 줄바꿈 허용 */
+.fin-form { flex-wrap: wrap; row-gap: 8px; }
+.fin-form .fin-form-field { min-width: 0; }
 
 /* ── 매출일지 강사별 신규매출 현황 카드 ── */
 .sl-stat-grid {
@@ -1656,6 +1688,7 @@ body.sidebar-collapsed #main { margin-left: 0; }
   padding: 8px 10px;
   border-bottom: 1px solid var(--border, #e2e6f0);
   vertical-align: middle;
+  white-space: nowrap;            /* 셀 내용 자르지 말고 가로 스크롤로 */
 }
 .sl-table tr:hover td {
   background: rgba(99,102,241,0.04);

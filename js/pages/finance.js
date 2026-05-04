@@ -334,6 +334,68 @@ function findCol(headers, ...keywords) {
 }
 
 /**
+ * finance income 한 건의 상태에 맞춰 매출일지(salesLog) entry 를 동기화합니다.
+ *
+ * 자격(instructor === 'ko'|'lee' && !isMisc) 충족 시:
+ *   - 연결된 sl 없으면 → 새 sl entry 를 confirmed 로 생성하고 salesLogId 역연결
+ *   - 연결된 sl 있으면 → date/회원명/금액/유형/결제수단 동기화
+ * 자격 미충족 시:
+ *   - 연결된 sl 있으면 삭제하고 salesLogId 제거
+ *
+ * 결산 행 편집 → 강사 ko/lee 지정·변경, 회원명 수정, 유형 변경 시 자동 호출.
+ */
+function syncSalesLogFromIncome(monthKey, incomeId) {
+  const md  = DB.financeGet(monthKey);
+  const inc = (md.incomes || []).find(r => r.id === incomeId);
+  if (!inc) return;
+
+  const eligible    = (inc.instructor === 'ko' || inc.instructor === 'lee') && !inc.isMisc;
+  const existingSl  = inc.salesLogId ? DB.salesLogsGetById(inc.salesLogId) : null;
+
+  if (eligible) {
+    if (existingSl) {
+      DB.salesLogsUpdate(inc.salesLogId, {
+        date:         inc.date,
+        month:        monthKey,
+        instructor:   inc.instructor,
+        memberName:   inc.name || '',
+        amount:       inc.amount,
+        type:         inc.isRenewal ? 'renewal' : 'new',
+        payMethod:    inc.payMethod || 'transfer',
+        linkedMonth:  monthKey,
+        linkedId:     inc.id,
+        linkedAmount: inc.amount,
+      });
+    } else {
+      const newSl = DB.salesLogsAdd({
+        date:         inc.date,
+        month:        monthKey,
+        instructor:   inc.instructor,
+        memberName:   inc.name || '',
+        amount:       inc.amount,
+        type:         inc.isRenewal ? 'renewal' : 'new',
+        payMethod:    inc.payMethod || 'transfer',
+        status:       'confirmed',
+        linkedMonth:  monthKey,
+        linkedId:     inc.id,
+        linkedAmount: inc.amount,
+        source:       'finance-sync',
+      });
+      DB.financeUpdateIncome(monthKey, inc.id, { salesLogId: newSl.id });
+    }
+  } else if (existingSl) {
+    // 자격 상실 (예: 강사 → 공용/빈칸, 또는 isMisc=true 로 변경) → sl 제거
+    DB.salesLogsDel(inc.salesLogId);
+    DB.financeUpdateIncome(monthKey, inc.id, { salesLogId: null });
+  }
+}
+
+/** finance income 삭제 시 연결된 sl entry 도 함께 삭제 */
+function syncSalesLogOnIncomeDelete(income) {
+  if (income && income.salesLogId) DB.salesLogsDel(income.salesLogId);
+}
+
+/**
  * 신규 추가된 finance income 에 대해 pending 상태의 매출일지 entry 중
  * 금액(3%)·날짜(±5일) 조건을 만족하는 최적 후보를 찾습니다.
  *
@@ -1112,7 +1174,15 @@ function renderFinanceData() {
   document.querySelectorAll('.fin-del').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      SM.del(btn.dataset.section, btn.dataset.id);
+      const section = btn.dataset.section;
+      const delId   = btn.dataset.id;
+      // 매출 행 삭제 전 — 연결된 sl entry 도 함께 정리하기 위해 income 객체 캐치
+      let toDelete = null;
+      if (section === 'income') {
+        toDelete = (SM.get().incomes || []).find(r => r.id === delId);
+      }
+      SM.del(section, delId);
+      if (toDelete) syncSalesLogOnIncomeDelete(toDelete);
       renderFinanceData();
       showToast('삭제했습니다');
     });
@@ -1247,6 +1317,9 @@ function enterEditMode(row) {
       patch[el.name] = val;
     });
     SM.update(section, id, patch);
+
+    // 매출(income) 행 편집 시 매출일지 동기화 — 강사·회원명·유형·금액 변경 반영
+    if (section === 'income') syncSalesLogFromIncome(finMonth, id);
 
     // 할부 개인지출 결제자 변경 시 이후 회차 자동 상속
     let msg = '수정했습니다';

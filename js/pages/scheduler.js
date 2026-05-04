@@ -367,7 +367,7 @@ export function renderScheduler() {
       ${INSTRUCTORS.map(inst => `
         <div class="sched-table-wrap">
           <div class="sched-instructor-bar">
-            👤 ${inst.name}<button class="sched-deadline-btn${DB.deadlineGet(inst.id) ? ' active' : ''}" data-inst="${inst.id}">[${DB.deadlineGet(inst.id) ? '마감중' : '마감'}]</button>
+            👤 ${inst.name}<button class="sched-deadline-btn${DB.deadlineGet(inst.id) ? ' active' : ''}" data-inst="${inst.id}" title="클릭으로 마감 / 마감 해제">${DB.deadlineGet(inst.id) ? '마감중' : '마감'}</button>
           </div>
           <div class="sched-table-scroll">
             <table class="sched-table" data-inst="${inst.id}" data-wkey="${wKey}">

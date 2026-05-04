@@ -309,8 +309,15 @@ export function renderSalesLog() {
       <div class="fin-table-wrap">
         <table class="fin-table sl-table">
           <thead><tr>
-            <th>날짜</th><th>선생님</th><th>회원명</th><th>원금</th>
-            <th>구분</th><th>결제</th><th>상태</th><th style="min-width:200px">은행 매칭 / 확정</th><th></th>
+            <th style="min-width:96px">날짜</th>
+            <th>선생님</th>
+            <th>회원명</th>
+            <th style="min-width:90px">원금</th>
+            <th>구분</th>
+            <th>결제</th>
+            <th style="min-width:96px">상태</th>
+            <th style="min-width:220px">은행 매칭 / 확정</th>
+            <th></th>
           </tr></thead>
           <tbody id="sl-tbody"></tbody>
         </table>

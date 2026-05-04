@@ -1,17 +1,21 @@
 import DB from '../db.js';
 import { showToast, escHtml } from '../utils.js';
 
-// 'all' = 전체보기, 'YYYY-MM' = 달별
-let viewMonth = new Date().toISOString().slice(0, 7);
-let showAll   = false;
-let editingId = null;
+// 'all' = 전체보기 (기본), 'YYYY-MM' = 달별
+let viewMonth   = new Date().toISOString().slice(0, 7);
+let showAll     = true;            // 기본 전체 보기
+let regFilter   = 'all';           // 'all' | 'registered' | 'unregistered'
+let editingId   = null;
 
 export function renderOtLog() {
-  const pc   = document.getElementById('page-content');
-  const all  = DB.otLogsGet();
-  const logs = showAll ? all : all.filter(l => l.date.startsWith(viewMonth));
+  const pc  = document.getElementById('page-content');
+  const all = DB.otLogsGet();
 
-  // 수정 중인 항목 데이터
+  // 달 / 등록상태 두 단계 필터
+  let logs = showAll ? all : all.filter(l => (l.date || '').startsWith(viewMonth));
+  if (regFilter === 'registered')   logs = logs.filter(l =>  l.isRegistered);
+  if (regFilter === 'unregistered') logs = logs.filter(l => !l.isRegistered);
+
   const editing = editingId ? all.find(l => l.id === editingId) : null;
 
   pc.innerHTML = `
@@ -56,13 +60,17 @@ export function renderOtLog() {
 
     <!-- 필터 바 -->
     <div class="todo-filter-bar" style="align-items:center;gap:8px;flex-wrap:wrap">
-      <button class="btn ${!showAll ? 'btn-export' : 'btn-import'}" id="ot-month-mode">달별 보기</button>
+      <!-- 기간 필터 -->
       <button class="btn ${showAll ? 'btn-export' : 'btn-import'}" id="ot-all-mode">전체 보기</button>
-      <div id="ot-month-nav" style="display:${showAll ? 'none' : 'flex'};align-items:center;gap:10px;margin-left:auto">
-        <button class="btn" onclick="window.changeOtMonth(-1)">◀</button>
-        <span style="font-weight:700;font-size:0.95rem">${viewMonth}</span>
-        <button class="btn" onclick="window.changeOtMonth(1)">▶</button>
-      </div>
+      <button class="btn ${!showAll ? 'btn-export' : 'btn-import'}" id="ot-month-mode">달별 보기</button>
+      <input type="month" id="ot-month-picker" value="${viewMonth}"
+        style="border:1px solid #d1d5db;border-radius:6px;padding:6px 8px;font-size:0.88rem;font-family:inherit;${showAll ? 'opacity:0.45' : ''}"/>
+
+      <!-- 등록/미등록 필터 -->
+      <span style="margin-left:14px;font-size:0.78rem;color:#7a829e">상태</span>
+      <button class="btn ${regFilter === 'all'          ? 'btn-export' : 'btn-import'}" data-reg-filter="all">전체</button>
+      <button class="btn ${regFilter === 'registered'   ? 'btn-export' : 'btn-import'}" data-reg-filter="registered">✓ 등록</button>
+      <button class="btn ${regFilter === 'unregistered' ? 'btn-export' : 'btn-import'}" data-reg-filter="unregistered">○ 미등록</button>
     </div>
 
     <div style="padding:4px 0 2px;font-size:0.82rem;color:#888;text-align:right">
@@ -72,9 +80,9 @@ export function renderOtLog() {
     <!-- 목록 -->
     <ul class="todo-list">
       ${logs.length === 0
-        ? '<li class="todo-empty">등록된 OT 일지가 없습니다</li>'
-        : logs.slice().sort((a, b) => b.date.localeCompare(a.date)).map(l => `
-          <li class="todo-item ot-item${editingId === l.id ? ' ot-editing' : ''}" data-id="${l.id}">
+        ? '<li class="todo-empty">조건에 맞는 OT 일지가 없습니다</li>'
+        : logs.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(l => `
+          <li class="todo-item ot-item${editingId === l.id ? ' ot-editing' : ''}${l.isRegistered ? ' ot-registered' : ''}" data-id="${l.id}">
             <div class="todo-body" style="flex:1">
               <div class="todo-top" style="flex-wrap:wrap;gap:4px">
                 <span class="ot-badge">${escHtml(l.writer || '—')}</span>
@@ -84,7 +92,9 @@ export function renderOtLog() {
               </div>
               ${l.note ? `<div class="todo-content" style="white-space:pre-wrap;margin-top:6px">${escHtml(l.note)}</div>` : ''}
             </div>
-            <div style="display:flex;flex-direction:column;gap:4px;align-items:center;flex-shrink:0;margin-left:8px">
+            <div style="display:flex;flex-direction:column;gap:4px;align-items:stretch;flex-shrink:0;margin-left:8px">
+              <button class="ot-reg-toggle ${l.isRegistered ? 'is-registered' : ''}" data-toggle="${l.id}"
+                title="클릭으로 등록/미등록 전환">${l.isRegistered ? '✓ 등록' : '○ 미등록'}</button>
               <button class="btn btn-import ot-edit-btn" data-edit="${l.id}" style="padding:4px 10px;font-size:0.78rem">수정</button>
               <button class="todo-del-btn" data-del="${l.id}" title="삭제">✕</button>
             </div>
@@ -92,7 +102,7 @@ export function renderOtLog() {
     </ul>
   `;
 
-  // 등록 / 수정 저장
+  // ── 등록 / 수정 저장 ──
   document.getElementById('ot-submit').onclick = () => {
     const date   = document.getElementById('ot-date').value;
     const writer = document.getElementById('ot-writer').value.trim();
@@ -107,28 +117,52 @@ export function renderOtLog() {
       editingId = null;
       showToast('수정했습니다');
     } else {
-      DB.otLogsAdd({ date, writer, name, phone, note });
+      DB.otLogsAdd({ date, writer, name, phone, note, isRegistered: false });
       showToast('등록했습니다');
     }
     renderOtLog();
   };
 
-  // 취소
+  // 취소 (편집 모드 해제)
   document.getElementById('ot-cancel')?.addEventListener('click', () => {
     editingId = null;
     renderOtLog();
   });
 
-  // 달별 / 전체 전환
-  document.getElementById('ot-month-mode').onclick = () => { showAll = false; renderOtLog(); };
+  // ── 기간 필터 ──
   document.getElementById('ot-all-mode').onclick   = () => { showAll = true;  renderOtLog(); };
+  document.getElementById('ot-month-mode').onclick = () => { showAll = false; renderOtLog(); };
+  document.getElementById('ot-month-picker').onchange = e => {
+    const v = e.target.value;
+    if (!v) return;
+    viewMonth = v;
+    showAll   = false;   // 달 선택 시 자동으로 달별 모드 전환
+    renderOtLog();
+  };
+
+  // ── 등록/미등록 필터 ──
+  pc.querySelectorAll('[data-reg-filter]').forEach(btn => {
+    btn.onclick = () => { regFilter = btn.dataset.regFilter; renderOtLog(); };
+  });
+
+  // ── 목록 — 등록/미등록 토글 ──
+  pc.querySelectorAll('[data-toggle]').forEach(btn => {
+    btn.onclick = ev => {
+      ev.stopPropagation();
+      const id = btn.dataset.toggle;
+      const cur = all.find(l => l.id === id);
+      if (!cur) return;
+      DB.otLogsUpdate(id, { isRegistered: !cur.isRegistered });
+      showToast(cur.isRegistered ? '미등록으로 전환' : '✓ 등록 처리');
+      renderOtLog();
+    };
+  });
 
   // 수정 버튼
   pc.querySelectorAll('[data-edit]').forEach(btn => {
     btn.onclick = () => {
       editingId = btn.dataset.edit;
       renderOtLog();
-      // 폼으로 스크롤
       document.querySelector('.todo-input-section')?.scrollIntoView({ behavior: 'smooth' });
     };
   });
@@ -144,10 +178,3 @@ export function renderOtLog() {
     };
   });
 }
-
-window.changeOtMonth = (v) => {
-  const d = new Date(viewMonth + '-01');
-  d.setMonth(d.getMonth() + v);
-  viewMonth = d.toISOString().slice(0, 7);
-  renderOtLog();
-};
