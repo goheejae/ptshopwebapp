@@ -404,11 +404,12 @@ function handleExcelUpload(file) {
         if (incomeCol) {
           const amt = parseAmount(row[incomeCol]);
           if (amt > 0) {
+            const desc = descCol ? String(row[descCol] || '').trim() : '';
             const key = `I::${date}::${amt}`;
             if (existingKeys.has(key)) { cntSkip++; return; }
             SM.addIncome({
               date, amount: amt,
-              instructor: '', name: '', payMethod: 'transfer',
+              instructor: '', name: desc, payMethod: 'transfer',
               isRenewal: false, source: 'excel', isAuto: true,
             });
             existingKeys.add(key);   // 같은 파일 내 중복도 방지
@@ -953,8 +954,12 @@ function renderFinanceData() {
   });
 
   // ── 행 클릭 → 편집 모드 ──
+  // 편집 모드 진입 후에는 폼 내부(select/input/저장·취소 버튼) 클릭이 row 까지 버블링되어
+  // enterEditMode 가 재호출되면 row.innerHTML 이 다시 그려지면서 열린 드롭다운이 즉시 닫혀버립니다.
+  // → row.dataset.editing 플래그로 가드합니다. 플래그는 renderFinanceData() 재렌더 시 자연 소멸.
   document.querySelectorAll('.fin-data-row').forEach(row => {
     row.addEventListener('click', e => {
+      if (row.dataset.editing === '1') return;
       if (e.target.closest('.fin-del') || e.target.closest('.fin-type-btn')) return;
       enterEditMode(row);
     });
