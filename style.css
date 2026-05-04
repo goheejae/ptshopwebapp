@@ -1101,6 +1101,8 @@ body.sidebar-collapsed #main { margin-left: 0; }
 .fin-type-btn.new:hover { background: #dcfce7; }
 .fin-type-btn.renewal       { background: var(--renewal-bg); color: var(--renewal-color); border: 1px solid #fed7aa; }
 .fin-type-btn.renewal:hover { background: #ffedd5; }
+.fin-type-btn.misc          { background: #ede9fe; color: #6d28d9; border: 1px solid #ddd6fe; }
+.fin-type-btn.misc:hover    { background: #e0d8fc; }
 
 /* ── 폼 내 신규/재등록 토글 ── */
 .fin-type-toggle {
@@ -1120,6 +1122,8 @@ body.sidebar-collapsed #main { margin-left: 0; }
 
 /* ── 재등록 행: orange 톤 (ko 파랑과 혼동 없음) ── */
 .fi-renewal-row td { color: var(--renewal-color); }
+/* ── 기타 행: violet 톤 ── */
+.fi-misc-row td { color: #6d28d9; }
 
 /* ── 유형 배지: 신규=green / 재등록=orange ── */
 .badge-renewal {

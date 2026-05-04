@@ -243,18 +243,22 @@ const SM = {
 
   calc(inst, data) {
     const other        = inst === 'ko' ? 'lee' : 'ko';
-    // instructor === 'shared' 매출은 두 강사가 50/50 으로 나눠 가집니다.
-    const sharedNew    = data.incomes.filter(r => r.instructor === 'shared' && !r.isRenewal).reduce((s, r) => s + r.amount, 0);
-    const sharedRenew  = data.incomes.filter(r => r.instructor === 'shared' &&  r.isRenewal).reduce((s, r) => s + r.amount, 0);
-    const myIncome     = data.incomes.filter(r => r.instructor === inst && !r.isRenewal).reduce((s, r) => s + r.amount, 0) + sharedNew * 0.5;
-    const renewalAmt   = data.incomes.filter(r => r.instructor === inst &&  r.isRenewal).reduce((s, r) => s + r.amount, 0) + sharedRenew * 0.5;
+    // 신규/재등록/기타 분기 — 재등록·기타는 둘 다 정산 매출(myIncome)에 포함되지 않음.
+    // shared 매출은 두 강사가 50/50 으로 분배.
+    const isNew        = r => !r.isRenewal && !r.isMisc;
+    const sharedNew    = data.incomes.filter(r => r.instructor === 'shared' && isNew(r)).reduce((s, r) => s + r.amount, 0);
+    const sharedRenew  = data.incomes.filter(r => r.instructor === 'shared' && r.isRenewal).reduce((s, r) => s + r.amount, 0);
+    const sharedMisc   = data.incomes.filter(r => r.instructor === 'shared' && r.isMisc).reduce((s, r) => s + r.amount, 0);
+    const myIncome     = data.incomes.filter(r => r.instructor === inst && isNew(r)).reduce((s, r) => s + r.amount, 0) + sharedNew * 0.5;
+    const renewalAmt   = data.incomes.filter(r => r.instructor === inst && r.isRenewal).reduce((s, r) => s + r.amount, 0) + sharedRenew * 0.5;
+    const miscAmt      = data.incomes.filter(r => r.instructor === inst && r.isMisc).reduce((s, r) => s + r.amount, 0) + sharedMisc * 0.5;
     const sharedTotal  = data.expenses.reduce((s, r) => s + r.amount, 0);
     const myPrivate    = data.privateExpenses.filter(r => r.payer === inst).reduce((s, r) => s + r.amount, 0);
     const otherPrivate = data.privateExpenses.filter(r => r.payer === other).reduce((s, r) => s + r.amount, 0);
     const final        = myIncome + myPrivate * 0.5 - otherPrivate * 0.5 - sharedTotal * 0.5;
     const adjItems     = this._normalizeAdjs((data.adjustments || {})[inst]);
     const adjAmt       = adjItems.reduce((s, a) => s + (a.amount || 0), 0);
-    return { myIncome, renewalAmt, sharedTotal, myPrivate, otherPrivate, final,
+    return { myIncome, renewalAmt, miscAmt, sharedTotal, myPrivate, otherPrivate, final,
              adjItems, adjAmt, adjustedFinal: final + adjAmt };
   },
 
@@ -742,12 +746,12 @@ export function renderFinance() {
       <div class="fin-table-wrap">
         <table class="fin-table">
           <thead><tr>
-            <th>날짜</th><th>강사</th><th>회원명</th><th>적요</th><th>내용</th><th>금액</th><th>결제수단</th><th>유형</th><th></th>
+            <th>날짜</th><th>강사</th><th>회원명</th><th>적요</th><th>내용</th><th>금액</th><th>메모</th><th>결제수단</th><th>유형</th><th></th>
           </tr></thead>
           <tbody id="fi-tbody"></tbody>
           <tfoot><tr>
             <td colspan="5" style="text-align:right;font-size:12px;color:var(--text-muted)">정산 포함 합계</td>
-            <td colspan="4" id="fi-total"></td>
+            <td colspan="5" id="fi-total"></td>
           </tr></tfoot>
         </table>
       </div>
@@ -798,12 +802,12 @@ export function renderFinance() {
       </div>
       <div class="fin-table-wrap">
         <table class="fin-table">
-          <thead><tr><th>날짜</th><th>적요</th><th>내용</th><th>금액</th><th>결제수단</th><th>결제자</th><th></th></tr></thead>
+          <thead><tr><th>날짜</th><th>적요</th><th>내용</th><th>금액</th><th>메모</th><th>결제수단</th><th>결제자</th><th></th></tr></thead>
           <tbody id="fe-tbody"></tbody>
           <tfoot><tr>
             <td colspan="2" style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
             <td></td>
-            <td colspan="4" id="fe-total"></td>
+            <td colspan="5" id="fe-total"></td>
           </tr></tfoot>
         </table>
       </div>
@@ -911,14 +915,17 @@ function renderFinanceData() {
   // ── 매출 테이블 ──
   // 민정(mj)·진영(jy) 매출은 정산 대상에서 완전 제외
   const isExcluded     = r => r.instructor === 'mj' || r.instructor === 'jy';
-  const settlableTotal = incomes.filter(r => !r.isRenewal && !isExcluded(r)).reduce((s, r) => s + r.amount, 0);
+  // 재등록·기타는 매출엔 포함되나 정산 매출(신규)에서는 제외
+  const settlableTotal = incomes.filter(r => !r.isRenewal && !r.isMisc && !isExcluded(r)).reduce((s, r) => s + r.amount, 0);
   const srcTag = r => r.source && r.source !== 'manual'
     ? ` <span style="font-size:10px;color:var(--text-muted)">[${escHtml(r.source)}]</span>` : '';
 
+  const typeOf = r => r.isMisc ? 'misc' : r.isRenewal ? 'renewal' : 'new';
+  const typeLabel = { new: '신규', renewal: '재등록', misc: '기타' };
   document.getElementById('fi-tbody').innerHTML = incomes.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="9">등록된 매출이 없습니다</td></tr>'
+    ? '<tr class="fin-empty-row"><td colspan="10">등록된 매출이 없습니다</td></tr>'
     : incomes.map(r => `
-        <tr class="fin-data-row${r.isRenewal ? ' fi-renewal-row' : ''}" data-id="${escHtml(r.id)}" data-section="income" title="클릭하여 수정">
+        <tr class="fin-data-row${r.isRenewal ? ' fi-renewal-row' : ''}${r.isMisc ? ' fi-misc-row' : ''}" data-id="${escHtml(r.id)}" data-section="income" title="클릭하여 수정">
           <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}${srcTag(r)}</td>
           <td>${
             r.instructor === 'ko'     ? '<span class="badge-ko">고희재</span>'  :
@@ -931,10 +938,11 @@ function renderFinanceData() {
           <td style="color:var(--text-muted);font-size:12px">${escHtml(r.memo || '')}</td>
           <td>${escHtml(r.content || '')}</td>
           <td style="font-weight:600">${fmtMoney(r.amount)}</td>
+          <td style="color:var(--text-muted);font-size:12px">${escHtml(r.note || '')}</td>
           <td>${r.payMethod === 'card' ? '카드' : '계좌이체'}${r.isInstallment ? ` <span class="fin-install-badge">${r.installLegacyCount ? `${r.installLegacyCount}/${r.installTotal}회 합산` : `${r.installNo}/${r.installTotal}`}</span>` : ''}</td>
           <td>
-            <button class="fin-type-btn ${r.isRenewal ? 'renewal' : 'new'}"
-                    data-id="${escHtml(r.id)}">${r.isRenewal ? '재등록' : '신규'}</button>
+            <button class="fin-type-btn ${typeOf(r)}"
+                    data-id="${escHtml(r.id)}">${typeLabel[typeOf(r)]}</button>
           </td>
           <td><button class="fin-del" data-section="income" data-id="${escHtml(r.id)}">✕</button></td>
         </tr>`
@@ -942,17 +950,18 @@ function renderFinanceData() {
 
   document.getElementById('fi-total').innerHTML =
     `<strong>${fmtMoney(settlableTotal)}</strong>`
-    + ` <span style="font-size:11px;color:var(--text-muted)">(재등록 제외)</span>`;
+    + ` <span style="font-size:11px;color:var(--text-muted)">(재등록·기타 제외)</span>`;
 
   // ── 공용지출 테이블 ──
   document.getElementById('fe-tbody').innerHTML = expenses.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="7">등록된 공용지출이 없습니다</td></tr>'
+    ? '<tr class="fin-empty-row"><td colspan="8">등록된 공용지출이 없습니다</td></tr>'
     : expenses.map(r => `
         <tr class="fin-data-row" data-id="${escHtml(r.id)}" data-section="shared" title="클릭하여 수정">
           <td>${r.isAuto ? '<span class="fin-auto-dot" title="자동 입력">●</span>' : ''}${escHtml(r.date)}${srcTag(r)}</td>
-          <td style="color:var(--text-muted);font-size:12px">${escHtml(r.memo || '—')}</td>
-          <td>${escHtml(r.content || '—')}</td>
+          <td style="color:var(--text-muted);font-size:12px">${escHtml(r.memo || '')}</td>
+          <td>${escHtml(r.content || '')}</td>
           <td style="font-weight:600">${fmtMoney(r.amount)}${r.isInstallment ? ` <span class="fin-install-badge">${r.installLegacyCount ? `${r.installLegacyCount}/${r.installTotal}회 합산` : `${r.installNo}/${r.installTotal}`}</span>` : ''}</td>
+          <td style="color:var(--text-muted);font-size:12px">${escHtml(r.note || '')}</td>
           <td>${r.payMethod === 'card' ? '💳 카드' : r.payMethod === 'transfer' ? '🏦 계좌이체' : '💵 현금'}</td>
           <td>${r.payer === 'ko' ? '<span class="badge-ko">고희재</span>' : r.payer === 'lee' ? '<span class="badge-lee">이건우</span>' : '공용'}</td>
           <td><button class="fin-del" data-section="shared" data-id="${escHtml(r.id)}">✕</button></td>
@@ -979,13 +988,18 @@ function renderFinanceData() {
   document.getElementById('fp-total').innerHTML =
     `<strong>${fmtMoney(privateExpenses.reduce((s, r) => s + r.amount, 0))}</strong>`;
 
-  // ── 유형 토글 버튼 (매출 행 내) ──
+  // ── 유형 토글 버튼 (매출 행 내) — 신규 → 재등록 → 기타 → 신규 순환 ──
   document.querySelectorAll('.fin-type-btn').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const cur = SM.get().incomes.find(x => x.id === btn.dataset.id);
       if (!cur) return;
-      SM.update('income', btn.dataset.id, { isRenewal: !cur.isRenewal });
+      const curT  = cur.isMisc ? 'misc' : cur.isRenewal ? 'renewal' : 'new';
+      const nextT = curT === 'new' ? 'renewal' : curT === 'renewal' ? 'misc' : 'new';
+      SM.update('income', btn.dataset.id, {
+        isRenewal: nextT === 'renewal',
+        isMisc:    nextT === 'misc',
+      });
       renderFinanceData();
     });
   });
@@ -1055,6 +1069,7 @@ function enterEditMode(row) {
       <td><input class="fin-inline-input" type="text" name="memo" value="${escHtml(r.memo || '')}" placeholder="적요" style="width:90px" /></td>
       <td><input class="fin-inline-input" type="text" name="content" value="${escHtml(r.content || '')}" placeholder="내용" style="width:120px" /></td>
       <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
+      <td><input class="fin-inline-input" type="text" name="note" value="${escHtml(r.note || '')}" placeholder="메모" style="width:110px" /></td>
       <td>
         <select class="fin-inline-input" name="payMethod">
           <option value="transfer" ${r.payMethod !== 'card' ? 'selected' : ''}>계좌이체</option>
@@ -1062,9 +1077,10 @@ function enterEditMode(row) {
         </select>
       </td>
       <td>
-        <select class="fin-inline-input" name="isRenewal">
-          <option value="false" ${!r.isRenewal ? 'selected' : ''}>신규</option>
-          <option value="true"  ${ r.isRenewal ? 'selected' : ''}>재등록</option>
+        <select class="fin-inline-input" name="type">
+          <option value="new"     ${(!r.isRenewal && !r.isMisc) ? 'selected' : ''}>신규</option>
+          <option value="renewal" ${r.isRenewal                  ? 'selected' : ''}>재등록</option>
+          <option value="misc"    ${r.isMisc                     ? 'selected' : ''}>기타</option>
         </select>
       </td>
       ${actionCells}`;
@@ -1075,6 +1091,7 @@ function enterEditMode(row) {
       <td><input class="fin-inline-input" type="text" name="memo" value="${escHtml(r.memo || '')}" placeholder="적요" style="width:90px" /></td>
       <td><input class="fin-inline-input" type="text" name="content" value="${escHtml(r.content || '')}" style="width:140px" /></td>
       <td><input class="fin-inline-input" type="number" name="amount" value="${r.amount}" style="width:90px" min="0" /></td>
+      <td><input class="fin-inline-input" type="text" name="note" value="${escHtml(r.note || '')}" placeholder="메모" style="width:110px" /></td>
       <td>
         <select class="fin-inline-input" name="payMethod">
           <option value="cash"     ${(r.payMethod || 'cash') === 'cash'     ? 'selected' : ''}>현금</option>
@@ -1116,8 +1133,13 @@ function enterEditMode(row) {
     const patch = {};
     row.querySelectorAll('[name]').forEach(el => {
       let val = el.value;
-      if (el.name === 'amount')    val = parseInt(val, 10) || 0;
-      if (el.name === 'isRenewal') val = (val === 'true');
+      if (el.name === 'amount') { patch.amount = parseInt(val, 10) || 0; return; }
+      // 매출 유형 select: type → {isRenewal, isMisc} 분해 저장
+      if (el.name === 'type') {
+        patch.isRenewal = (val === 'renewal');
+        patch.isMisc    = (val === 'misc');
+        return;
+      }
       patch[el.name] = val;
     });
     SM.update(section, id, patch);
@@ -1163,6 +1185,11 @@ function renderReport(data) {
         <div class="fin-report-row">
           <span class="fin-report-label" style="color:#2563eb">재등록 매출 (정산 제외)</span>
           <span class="fin-report-val" style="color:#2563eb">${fmtMoney(s.renewalAmt)}</span>
+        </div>` : ''}
+        ${s.miscAmt > 0 ? `
+        <div class="fin-report-row">
+          <span class="fin-report-label" style="color:#7c3aed">기타 매출 (정산 제외)</span>
+          <span class="fin-report-val" style="color:#7c3aed">${fmtMoney(s.miscAmt)}</span>
         </div>` : ''}
         <div class="fin-report-row">
           <span class="fin-report-label">공용지출 50% 차감</span>
