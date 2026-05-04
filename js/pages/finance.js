@@ -255,11 +255,14 @@ const SM = {
     const sharedTotal  = data.expenses.reduce((s, r) => s + r.amount, 0);
     const myPrivate    = data.privateExpenses.filter(r => r.payer === inst).reduce((s, r) => s + r.amount, 0);
     const otherPrivate = data.privateExpenses.filter(r => r.payer === other).reduce((s, r) => s + r.amount, 0);
-    const final        = myIncome + myPrivate * 0.5 - otherPrivate * 0.5 - sharedTotal * 0.5;
+    // 최종 수령액 = (신규+재등록+기타) − 지출(net) − 보정
+    //   지출(net) = 공용지출·50 + 상대개인지출·50 − 본인개인지출·50
+    const totalIncome  = myIncome + renewalAmt + miscAmt;
+    const final        = totalIncome + myPrivate * 0.5 - otherPrivate * 0.5 - sharedTotal * 0.5;
     const adjItems     = this._normalizeAdjs((data.adjustments || {})[inst]);
     const adjAmt       = adjItems.reduce((s, a) => s + (a.amount || 0), 0);
     return { myIncome, renewalAmt, miscAmt, sharedTotal, myPrivate, otherPrivate, final,
-             adjItems, adjAmt, adjustedFinal: final + adjAmt };
+             adjItems, adjAmt, adjustedFinal: final - adjAmt };
   },
 
   addAdjustment(inst, amount, note) {
@@ -749,10 +752,20 @@ export function renderFinance() {
             <th>날짜</th><th>강사</th><th>회원명</th><th>적요</th><th>내용</th><th>금액</th><th>메모</th><th>결제수단</th><th>유형</th><th></th>
           </tr></thead>
           <tbody id="fi-tbody"></tbody>
-          <tfoot><tr>
-            <td colspan="5" style="text-align:right;font-size:12px;color:var(--text-muted)">정산 포함 합계</td>
-            <td colspan="5" id="fi-total"></td>
-          </tr></tfoot>
+          <tfoot>
+            <tr>
+              <td colspan="5" style="text-align:right;font-size:12px;color:var(--text-muted)">전체 매출 총합 (신규+재등록+기타)</td>
+              <td colspan="5" id="fi-total"></td>
+            </tr>
+            <tr>
+              <td colspan="5" style="text-align:right;font-size:12px;color:var(--ko-color)">고희재 매출 (직접 + 공용 50%)</td>
+              <td colspan="5" id="fi-total-ko"></td>
+            </tr>
+            <tr>
+              <td colspan="5" style="text-align:right;font-size:12px;color:var(--lee-color)">이건우 매출 (직접 + 공용 50%)</td>
+              <td colspan="5" id="fi-total-lee"></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
@@ -914,9 +927,13 @@ function renderFinanceData() {
 
   // ── 매출 테이블 ──
   // 민정(mj)·진영(jy) 매출은 정산 대상에서 완전 제외
-  const isExcluded     = r => r.instructor === 'mj' || r.instructor === 'jy';
-  // 재등록·기타는 매출엔 포함되나 정산 매출(신규)에서는 제외
-  const settlableTotal = incomes.filter(r => !r.isRenewal && !r.isMisc && !isExcluded(r)).reduce((s, r) => s + r.amount, 0);
+  const isExcluded   = r => r.instructor === 'mj' || r.instructor === 'jy';
+  // 전체 매출 총합 (신규+재등록+기타 모두 포함, mj·jy 제외)
+  const fullTotal    = incomes.filter(r => !isExcluded(r)).reduce((s, r) => s + r.amount, 0);
+  // 강사별 총합 = 본인 직접 매출 + 공용 매출의 50%
+  const sharedAll    = incomes.filter(r => r.instructor === 'shared').reduce((s, r) => s + r.amount, 0);
+  const koTotal      = incomes.filter(r => r.instructor === 'ko').reduce((s, r) => s + r.amount, 0)  + sharedAll * 0.5;
+  const leeTotal     = incomes.filter(r => r.instructor === 'lee').reduce((s, r) => s + r.amount, 0) + sharedAll * 0.5;
   const srcTag = r => r.source && r.source !== 'manual'
     ? ` <span style="font-size:10px;color:var(--text-muted)">[${escHtml(r.source)}]</span>` : '';
 
@@ -948,9 +965,9 @@ function renderFinanceData() {
         </tr>`
     ).join('');
 
-  document.getElementById('fi-total').innerHTML =
-    `<strong>${fmtMoney(settlableTotal)}</strong>`
-    + ` <span style="font-size:11px;color:var(--text-muted)">(재등록·기타 제외)</span>`;
+  document.getElementById('fi-total').innerHTML     = `<strong>${fmtMoney(fullTotal)}</strong>`;
+  document.getElementById('fi-total-ko').innerHTML  = `<span style="color:var(--ko-color);font-weight:600">${fmtMoney(koTotal)}</span>`;
+  document.getElementById('fi-total-lee').innerHTML = `<span style="color:var(--lee-color);font-weight:600">${fmtMoney(leeTotal)}</span>`;
 
   // ── 공용지출 테이블 ──
   document.getElementById('fe-tbody').innerHTML = expenses.length === 0
@@ -1178,17 +1195,17 @@ function renderReport(data) {
       <div class="fin-report-card">
         <div class="fin-report-name">${name}</div>
         <div class="fin-report-row">
-          <span class="fin-report-label">정산 매출 (신규)</span>
+          <span class="fin-report-label">신규 매출</span>
           <span class="fin-report-val">${fmtMoney(s.myIncome)}</span>
         </div>
         ${s.renewalAmt > 0 ? `
         <div class="fin-report-row">
-          <span class="fin-report-label" style="color:#2563eb">재등록 매출 (정산 제외)</span>
+          <span class="fin-report-label" style="color:#2563eb">재등록 매출</span>
           <span class="fin-report-val" style="color:#2563eb">${fmtMoney(s.renewalAmt)}</span>
         </div>` : ''}
         ${s.miscAmt > 0 ? `
         <div class="fin-report-row">
-          <span class="fin-report-label" style="color:#7c3aed">기타 매출 (정산 제외)</span>
+          <span class="fin-report-label" style="color:#7c3aed">기타 매출</span>
           <span class="fin-report-val" style="color:#7c3aed">${fmtMoney(s.miscAmt)}</span>
         </div>` : ''}
         <div class="fin-report-row">
