@@ -904,6 +904,31 @@ body.sidebar-collapsed #main { margin-left: 0; }
 .fin-report-val.plus  { color: var(--info); }
 .fin-report-val.minus { color: var(--danger); }
 .fin-divider { height: 1px; background: var(--border); margin: 12px 0; }
+
+/* ── 신규 매출 누적 섹션 (결산 카드 아래) ── */
+.fin-cumulative-card {
+  background: var(--card); border: 1.5px solid var(--border); border-radius: var(--radius-lg);
+  padding: 18px 20px; margin-top: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.fin-cumulative-title {
+  font-size: 13.5px; font-weight: 700; margin-bottom: 12px; letter-spacing: -.2px;
+}
+.fin-cumulative-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+.fin-cumulative-table thead th {
+  text-align: right; padding: 8px 12px;
+  font-size: 11px; color: var(--text-muted); font-weight: 600;
+  border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: .4px;
+}
+.fin-cumulative-table thead th:first-child { text-align: left; }
+.fin-cumulative-table tbody td {
+  padding: 10px 12px; text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.fin-cumulative-table tbody td:first-child { text-align: left; }
+.fin-cumulative-table tbody tr:last-child td { border-bottom: none; }
 .fin-adj-label { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
 .fin-adj-inputs { display: flex; gap: 8px; }
 .fin-adj-amount {
@@ -1163,6 +1188,37 @@ body.sidebar-collapsed #main { margin-left: 0; }
 }
 .fin-data-row:active td { background: #e0e7ff !important; }
 
+/* ── 편집 모드 시 저장/취소 셀을 우측에 sticky 고정 (가로 스크롤 시에도 항상 보임) ── */
+.fin-data-row[data-editing="1"] td:last-child {
+  position: sticky;
+  right: 0;
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  box-shadow: -6px 0 10px -2px rgba(0,0,0,0.06);
+  z-index: 2;
+}
+
+/* ── 매출일지 강사별 신규매출 현황 카드 ── */
+.sl-stat-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+}
+.sl-stat-card {
+  background: var(--card); border: 1.5px solid var(--border); border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition);
+}
+.sl-stat-card:hover { box-shadow: var(--shadow); }
+.sl-stat-name { margin-bottom: 10px; font-size: 14px; font-weight: 700; }
+.sl-stat-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 0; font-size: 13px;
+}
+.sl-stat-label { color: var(--text-muted); }
+.sl-stat-val { font-weight: 600; letter-spacing: -.2px; }
+.sl-stat-strong { font-size: 15px; font-weight: 800; }
+.sl-stat-divider { height: 1px; background: var(--border); margin: 6px 0; }
+
 /* ════════════════════════════════
    RESPONSIVE — 태블릿 (≤ 1024px)
 ════════════════════════════════ */
@@ -1257,6 +1313,9 @@ body.sidebar-collapsed #main { margin-left: 0; }
   /* 정산 리포트 카드 세로 */
   .fin-report-grid { grid-template-columns: 1fr; gap: 12px; }
   .fin-final-val   { font-size: 20px; }
+
+  /* 매출일지 강사별 카드 세로 */
+  .sl-stat-grid    { grid-template-columns: 1fr; gap: 12px; }
 
   /* 정산 네비 */
   .fin-month-label { font-size: 15px; min-width: 110px; }

@@ -18,9 +18,9 @@ import DB from '../db.js';
 import { showToast, escHtml, fmtMoney } from '../utils.js';
 
 // ── 상수 (finance.js 와 동일) ──
-const LEGACY_KEY   = '2025-11~03';
-const LEGACY_LABEL = '2025년 11월 ~ 2026년 3월 (통합)';
-const FIRST_NORMAL = '2026-04';
+const LEGACY_KEY   = '2025-11~04';
+const LEGACY_LABEL = '2025년 11월 ~ 2026년 4월 (통합)';
+const FIRST_NORMAL = '2026-05';
 
 // ── 모듈 레벨 상태 ──
 let slMonth = new Date().toISOString().slice(0, 7);
@@ -99,6 +99,64 @@ function findBestMatch(slEntry) {
 }
 
 // ════════════════════════════════
+// 강사별 신규매출 현황 렌더
+// ════════════════════════════════
+/**
+ * 매출일지 entries 에서 신규(=재등록 아닌) 항목을 강사별로 집계해
+ * 확정/대기 분리하여 카드 UI 로 보여줍니다.
+ * 결제수단별 분포, 회원 수(고유 회원명) 도 함께 노출.
+ */
+function renderSalesLogStats(entries) {
+  const wrap = document.getElementById('sl-stats');
+  if (!wrap) return;
+
+  const newOnly = entries.filter(e => e.type !== 'renewal');
+
+  const calc = inst => {
+    const rows = newOnly.filter(e => e.instructor === inst);
+    const conf = rows.filter(e => e.status === 'confirmed');
+    const pend = rows.filter(e => e.status === 'pending');
+    const confAmt = conf.reduce((s, e) => s + (e.linkedAmount ?? e.amount), 0);
+    const pendAmt = pend.reduce((s, e) => s + e.amount, 0);
+    const members = new Set(rows.map(e => (e.memberName || '').trim()).filter(Boolean));
+    return {
+      confCnt: conf.length, confAmt,
+      pendCnt: pend.length, pendAmt,
+      totalCnt: rows.length, totalAmt: confAmt + pendAmt,
+      memberCnt: members.size,
+    };
+  };
+
+  const ko  = calc('ko');
+  const lee = calc('lee');
+
+  const card = (name, cls, s) => `
+    <div class="sl-stat-card">
+      <div class="sl-stat-name"><span class="badge-${cls}">${name}</span></div>
+      <div class="sl-stat-row">
+        <span class="sl-stat-label">신규 회원 수</span>
+        <span class="sl-stat-val">${s.memberCnt}명</span>
+      </div>
+      <div class="sl-stat-row">
+        <span class="sl-stat-label">신규매출 총합</span>
+        <span class="sl-stat-val sl-stat-strong">${fmtMoney(s.totalAmt)}</span>
+      </div>
+      <div class="sl-stat-divider"></div>
+      <div class="sl-stat-row">
+        <span class="sl-stat-label" style="color:var(--success,#16a34a)">✓ 확정 ${s.confCnt}건</span>
+        <span class="sl-stat-val" style="color:var(--success,#16a34a)">${fmtMoney(s.confAmt)}</span>
+      </div>
+      <div class="sl-stat-row">
+        <span class="sl-stat-label" style="color:var(--text-muted)">⋯ 대기 ${s.pendCnt}건</span>
+        <span class="sl-stat-val" style="color:var(--text-muted)">${fmtMoney(s.pendAmt)}</span>
+      </div>
+    </div>
+  `;
+
+  wrap.innerHTML = `<div class="sl-stat-grid">${card('고희재', 'ko', ko)}${card('이건우', 'lee', lee)}</div>`;
+}
+
+// ════════════════════════════════
 // 메인 렌더 함수
 // ════════════════════════════════
 export function renderSalesLog() {
@@ -154,6 +212,14 @@ export function renderSalesLog() {
       </div>
     </div>
 
+    <!-- 강사별 신규매출 현황 (현재달) -->
+    <div class="fin-section">
+      <div class="fin-section-header-row">
+        <span>📈 현재달 신규매출 현황</span>
+      </div>
+      <div id="sl-stats"></div>
+    </div>
+
     <!-- 매출일지 리스트 -->
     <div class="fin-section">
       <div class="fin-section-header-row">
@@ -205,6 +271,9 @@ function renderSalesLogData() {
     const confirmedAmt = confirmedNew.reduce((s, e) => s + (e.linkedAmount ?? e.amount), 0);
     sumEl.textContent = `확정 ${confirmedNew.length}건 ${fmtMoney(confirmedAmt)} | 대기 ${pendingCnt}건`;
   }
+
+  // 강사별 신규매출 현황 — 매출일지 entries 기반 (확정·대기 모두 포함, 재등록 제외)
+  renderSalesLogStats(entries);
 
   // pending 항목에 대해 스마트 매칭 실행
   const matchMap = {};

@@ -5,8 +5,8 @@
  *   수령액 = 본인매출(재등록 제외) + 본인개인지출×0.5 − 상대방개인지출×0.5 − 공용지출합계×0.5
  *
  * 기간 정책:
- *   2025-11 ~ 2026-03 → 통합 세션 (LEGACY_KEY) — 그 이전 이동 불가
- *   2026-04~          → 정상 월 단위
+ *   2025-11 ~ 2026-04 → 통합 세션 (LEGACY_KEY) — 그 이전 이동 불가
+ *   2026-05~          → 정상 월 단위
  *
  * 엑셀 업로드:
  *   SheetJS(XLSX) 사용 — 입금 열 → 매출, 출금 열 → 공용지출로 자동 분류
@@ -23,9 +23,9 @@ import { showToast, escHtml, fmtMoney } from '../utils.js';
 const GOOGLE_VISION_API_KEY = 'AIzaSyBGf8Y7Y_qnRez6PvEIfKuGE0zA8kjoLZA';
 
 // ── 상수 ──
-const LEGACY_KEY   = '2025-11~03';
-const LEGACY_LABEL = '2025년 11월 ~ 2026년 3월 (통합)';
-const FIRST_NORMAL = '2026-04';
+const LEGACY_KEY   = '2025-11~04';
+const LEGACY_LABEL = '2025년 11월 ~ 2026년 4월 (통합)';
+const FIRST_NORMAL = '2026-05';
 
 // ── 모듈 레벨 상태 ──
 let finMonth        = new Date().toISOString().slice(0, 7);
@@ -66,7 +66,7 @@ function sortByDate(arr) {
 
 /**
  * 할부 결제를 월별로 분산하여 각 월의 finance 데이터에 저장합니다.
- * FIRST_NORMAL(2026-04) 이전 회차는 하나로 합산해 LEGACY_KEY에 저장합니다.
+ * FIRST_NORMAL(2026-05) 이전 회차는 하나로 합산해 LEGACY_KEY에 저장합니다.
  *
  * @param {string} startDate  - 시작 날짜 'YYYY-MM-DD'
  * @param {number} monthlyAmt - 월 할부 금액 (Math.round(총금액 / 개월수))
@@ -87,7 +87,7 @@ function distributeInstallment(startDate, monthlyAmt, total, base) {
     items.push({ no: i + 1, monthKey: `${y}-${mo}`, date: `${y}-${mo}-${day}` });
   }
 
-  // LEGACY: 2026-04 이전 회차는 통합 기간에 합산
+  // LEGACY: 2026-05 이전 회차는 통합 기간에 합산
   const legacyItems = items.filter(it => it.monthKey < FIRST_NORMAL);
   const normalItems = items.filter(it => it.monthKey >= FIRST_NORMAL);
 
@@ -255,14 +255,15 @@ const SM = {
     const sharedTotal  = data.expenses.reduce((s, r) => s + r.amount, 0);
     const myPrivate    = data.privateExpenses.filter(r => r.payer === inst).reduce((s, r) => s + r.amount, 0);
     const otherPrivate = data.privateExpenses.filter(r => r.payer === other).reduce((s, r) => s + r.amount, 0);
-    // 최종 수령액 = (신규+재등록+기타) − 지출(net) − 보정
+    // 최종 수령액 = (신규+재등록+기타) − 지출(net) + 보정
     //   지출(net) = 공용지출·50 + 상대개인지출·50 − 본인개인지출·50
+    //   보정은 입력값 부호를 그대로 적용 — 음수 입력 = 차감, 양수 입력 = 가산
     const totalIncome  = myIncome + renewalAmt + miscAmt;
     const final        = totalIncome + myPrivate * 0.5 - otherPrivate * 0.5 - sharedTotal * 0.5;
     const adjItems     = this._normalizeAdjs((data.adjustments || {})[inst]);
     const adjAmt       = adjItems.reduce((s, a) => s + (a.amount || 0), 0);
     return { myIncome, renewalAmt, miscAmt, sharedTotal, myPrivate, otherPrivate, final,
-             adjItems, adjAmt, adjustedFinal: final - adjAmt };
+             adjItems, adjAmt, adjustedFinal: final + adjAmt };
   },
 
   addAdjustment(inst, amount, note) {
@@ -894,6 +895,7 @@ export function renderFinance() {
         📊 월말 결산 리포트 — <span id="fin-report-month"></span>
       </div>
       <div class="fin-report-grid" id="fin-report-grid"></div>
+      <div id="fin-cumulative"></div>
     </div>
   `;
 
@@ -1179,6 +1181,65 @@ function enterEditMode(row) {
 }
 
 // ════════════════════════════════
+// 누적 신규 매출 — 현재달 + 모든 달 합산
+// ════════════════════════════════
+/**
+ * 단일 월 데이터에서 강사별 신규 매출(직접 + 공용 50%) 을 계산합니다.
+ * 신규 = isRenewal === false && isMisc === false
+ */
+function calcMonthNewIncome(monthData, inst) {
+  const isNew     = r => !r.isRenewal && !r.isMisc;
+  const incomes   = monthData.incomes || [];
+  const direct    = incomes.filter(r => r.instructor === inst && isNew(r)).reduce((s, r) => s + r.amount, 0);
+  const sharedNew = incomes.filter(r => r.instructor === 'shared' && isNew(r)).reduce((s, r) => s + r.amount, 0);
+  return direct + sharedNew * 0.5;
+}
+
+function renderCumulativeIncome(currentData) {
+  const wrap = document.getElementById('fin-cumulative');
+  if (!wrap) return;
+
+  const curKo  = calcMonthNewIncome(currentData, 'ko');
+  const curLee = calcMonthNewIncome(currentData, 'lee');
+
+  // 모든 월 누적
+  let cumKo = 0, cumLee = 0;
+  const finance = DB._d.finance || {};
+  Object.keys(finance).forEach(mk => {
+    const md = DB.financeGet(mk);
+    cumKo  += calcMonthNewIncome(md, 'ko');
+    cumLee += calcMonthNewIncome(md, 'lee');
+  });
+
+  wrap.innerHTML = `
+    <div class="fin-cumulative-card">
+      <div class="fin-cumulative-title">📈 신규 매출 총합</div>
+      <table class="fin-cumulative-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>현재달</th>
+            <th>누적 (모든 달)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge-ko">고희재</span></td>
+            <td style="color:var(--ko-color);font-weight:700">${fmtMoney(curKo)}</td>
+            <td style="color:var(--ko-color);font-weight:700">${fmtMoney(cumKo)}</td>
+          </tr>
+          <tr>
+            <td><span class="badge-lee">이건우</span></td>
+            <td style="color:var(--lee-color);font-weight:700">${fmtMoney(curLee)}</td>
+            <td style="color:var(--lee-color);font-weight:700">${fmtMoney(cumLee)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ════════════════════════════════
 // 결산 리포트
 // ════════════════════════════════
 function renderReport(data) {
@@ -1232,6 +1293,9 @@ function renderReport(data) {
         </div>
       </div>`;
   }).join('');
+
+  // 결산 카드 아래 — 신규 매출 누적 섹션
+  renderCumulativeIncome(data);
 }
 
 // ════════════════════════════════
@@ -1266,6 +1330,25 @@ function renderAdjustmentSection(data) {
         </div>
       </div>`;
   }).join('');
+
+  // 보정 금액 input 실시간 색상 — 음수 빨강 / 양수 파랑 / 0·빈 입력 기본
+  grid.querySelectorAll('.fin-adjust-input').forEach(input => {
+    const updateColor = () => {
+      const v = parseInt(input.value, 10);
+      if (isNaN(v) || v === 0) {
+        input.style.color = '';
+        input.style.fontWeight = '';
+      } else if (v < 0) {
+        input.style.color = '#dc2626';
+        input.style.fontWeight = '700';
+      } else {
+        input.style.color = '#2563eb';
+        input.style.fontWeight = '700';
+      }
+    };
+    input.addEventListener('input', updateColor);
+    updateColor();
+  });
 
   grid.querySelectorAll('.fin-adjust-add').forEach(btn => {
     btn.addEventListener('click', () => {
