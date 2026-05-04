@@ -1198,6 +1198,16 @@ body.sidebar-collapsed #main { margin-left: 0; }
   z-index: 2;
 }
 
+/* ── 매출일지 상태 배지 클릭 hover ── */
+.sl-status-toggle {
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.sl-status-toggle:hover {
+  transform: scale(1.06);
+  box-shadow: 0 2px 6px rgba(0,0,0,.12);
+}
+
 /* ── 매출일지 강사별 신규매출 현황 카드 ── */
 .sl-stat-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 14px;

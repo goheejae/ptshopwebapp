@@ -203,9 +203,11 @@ const SM = {
   save(d) { DB.financeSet(finMonth, d); },
 
   addIncome(fields) {
+    const entry = { id: genId(), createdAt: new Date().toISOString(), ...fields };
     const d = this.get();
-    d.incomes.push({ id: genId(), createdAt: new Date().toISOString(), ...fields });
+    d.incomes.push(entry);
     this.save(d);
+    return entry;
   },
   addShared(fields) {
     const d = this.get();
@@ -332,6 +334,48 @@ function findCol(headers, ...keywords) {
 }
 
 /**
+ * 신규 추가된 finance income 에 대해 pending 상태의 매출일지 entry 중
+ * 금액(3%)·날짜(±5일) 조건을 만족하는 최적 후보를 찾습니다.
+ *
+ * 카드사 입금은 보통 결제일로부터 1~4일 후 통장에 들어오므로
+ *   bank_date - sl_date ∈ [-1, +5] 일 범위 내에서만 매칭합니다.
+ *
+ * 이름 유사성 보너스, 이미 confirmed 된 sl 은 자동 제외.
+ *
+ * @returns {object | null} 매칭된 salesLog entry 또는 null
+ */
+function findMatchingPendingSalesLog(financeIncome) {
+  const allSL = Object.values(DB._d.salesLogs || {})
+    .filter(e => e && e.status === 'pending');
+  if (!allSL.length || !financeIncome.amount || !financeIncome.date) return null;
+
+  let best = null, bestScore = -Infinity;
+
+  for (const sl of allSL) {
+    if (!sl.amount || !sl.date) continue;
+
+    const amtRatio = Math.abs(financeIncome.amount - sl.amount) / sl.amount;
+    if (amtRatio > 0.03) continue;
+
+    // 입금일은 결제일 같거나 이후 1~5일 (드물게 -1일 정정 입금도 허용)
+    const ms     = (new Date(financeIncome.date) - new Date(sl.date)) / 86400000;
+    if (isNaN(ms) || ms < -1 || ms > 5) continue;
+
+    let score = 100 - amtRatio * 500 - Math.abs(ms) * 8;
+
+    // 이미 입금된 finance.name 이 있고 sl.memberName 과 유사하면 가점
+    if (financeIncome.name && sl.memberName) {
+      const n1 = financeIncome.name.replace(/\s/g, '');
+      const n2 = sl.memberName.replace(/\s/g, '');
+      if (n1 && n2 && (n1.includes(n2) || n2.includes(n1))) score += 30;
+    }
+
+    if (score > bestScore) { best = sl; bestScore = score; }
+  }
+  return best;
+}
+
+/**
  * 통장 입금 내역의 적요·내용 텍스트가 카드사 정산금 패턴에 해당하는지 추정합니다.
  * 기본 'transfer'를 'card'로 자동 전환할 때 사용합니다.
  *
@@ -433,7 +477,7 @@ function handleExcelUpload(file) {
         ...existing.expenses.map(r => `E::${r.date}::${r.content || ''}::${r.amount}`),
       ]);
 
-      let cntIncome = 0, cntExpense = 0, cntSkip = 0;
+      let cntIncome = 0, cntExpense = 0, cntSkip = 0, cntAutoMatch = 0;
 
       rows.forEach(row => {
         const date = normalizeDate(row[dateCol]);
@@ -449,12 +493,33 @@ function handleExcelUpload(file) {
             if (existingKeys.has(key)) { cntSkip++; return; }
             // 카드사 정산금 패턴이면 결제수단을 'card'로 자동 전환
             const payMethod = detectCardIncome(memo, content) ? 'card' : 'transfer';
-            SM.addIncome({
+
+            // 1) 매출일지 pending 항목 중 매칭 후보 탐색
+            const slMatch = findMatchingPendingSalesLog({ date, amount: amt, name: '' });
+
+            // 2) 매칭됐으면 회원명·강사·재등록 여부를 매출일지에서 가져와서 finance income 에 채움
+            const newIncome = SM.addIncome({
               date, amount: amt,
-              instructor: '', name: '', payMethod,
+              instructor: slMatch ? slMatch.instructor : '',
+              name:       slMatch ? slMatch.memberName : '',
+              payMethod,
               memo, content,
-              isRenewal: false, source: 'excel', isAuto: true,
+              isRenewal:  slMatch ? (slMatch.type === 'renewal') : false,
+              source: 'excel', isAuto: true,
+              ...(slMatch && { salesLogId: slMatch.id }),
             });
+
+            // 3) 매출일지 entry 도 confirmed 로 자동 전환 + linkedAmount 에 실입금액 기록
+            if (slMatch) {
+              DB.salesLogsUpdate(slMatch.id, {
+                status:       'confirmed',
+                linkedMonth:  finMonth,
+                linkedId:     newIncome.id,
+                linkedAmount: amt,
+              });
+              cntAutoMatch++;
+            }
+
             existingKeys.add(key);   // 같은 파일 내 중복도 방지
             cntIncome++;
           }
@@ -474,13 +539,14 @@ function handleExcelUpload(file) {
       lastExcelKey = fileKey;
       renderFinanceData();
 
-      const added = cntIncome + cntExpense;
+      const added       = cntIncome + cntExpense;
+      const matchSuffix = cntAutoMatch > 0 ? ` · 매출일지 자동매칭 ${cntAutoMatch}건` : '';
       if (added === 0 && cntSkip > 0) {
         showToast(`모든 내역(${cntSkip}건)이 이미 등록되어 있습니다`);
       } else if (cntSkip > 0) {
-        showToast(`중복 ${cntSkip}건 제외 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건 추가`);
+        showToast(`중복 ${cntSkip}건 제외 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건 추가${matchSuffix}`);
       } else {
-        showToast(`업로드 완료 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건`);
+        showToast(`업로드 완료 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건${matchSuffix}`);
       }
     } catch (err) {
       console.error('엑셀 파싱 오류:', err);
@@ -755,16 +821,16 @@ export function renderFinance() {
           <tbody id="fi-tbody"></tbody>
           <tfoot>
             <tr>
-              <td colspan="5" style="text-align:right;font-size:12px;color:var(--text-muted)">전체 매출 총합 (신규+재등록+기타)</td>
-              <td colspan="5" id="fi-total"></td>
-            </tr>
-            <tr>
-              <td colspan="5" style="text-align:right;font-size:12px;color:var(--ko-color)">고희재 매출 (직접 + 공용 50%)</td>
+              <td colspan="5" style="text-align:right;font-size:12px;color:var(--ko-color)">고희재 — 직접 매출 / 공용 분배(50%) / 총합</td>
               <td colspan="5" id="fi-total-ko"></td>
             </tr>
             <tr>
-              <td colspan="5" style="text-align:right;font-size:12px;color:var(--lee-color)">이건우 매출 (직접 + 공용 50%)</td>
+              <td colspan="5" style="text-align:right;font-size:12px;color:var(--lee-color)">이건우 — 직접 매출 / 공용 분배(50%) / 총합</td>
               <td colspan="5" id="fi-total-lee"></td>
+            </tr>
+            <tr>
+              <td colspan="5" style="text-align:right;font-size:12px;color:var(--text-muted);font-weight:700">전체 매출 총합 (신규+재등록+기타)</td>
+              <td colspan="5" id="fi-total"></td>
             </tr>
           </tfoot>
         </table>
@@ -818,11 +884,18 @@ export function renderFinance() {
         <table class="fin-table">
           <thead><tr><th>날짜</th><th>적요</th><th>내용</th><th>금액</th><th>메모</th><th>결제수단</th><th>결제자</th><th></th></tr></thead>
           <tbody id="fe-tbody"></tbody>
-          <tfoot><tr>
-            <td colspan="2" style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
-            <td></td>
-            <td colspan="5" id="fe-total"></td>
-          </tr></tfoot>
+          <tfoot>
+            <tr>
+              <td colspan="2" style="text-align:right;font-size:12px;color:var(--text-muted)">합계</td>
+              <td></td>
+              <td colspan="5" id="fe-total"></td>
+            </tr>
+            <tr>
+              <td colspan="2" style="text-align:right;font-size:12px;color:var(--text-muted)">강사별 50% 분담</td>
+              <td></td>
+              <td colspan="5" id="fe-total-half"></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
@@ -895,7 +968,6 @@ export function renderFinance() {
         📊 월말 결산 리포트 — <span id="fin-report-month"></span>
       </div>
       <div class="fin-report-grid" id="fin-report-grid"></div>
-      <div id="fin-cumulative"></div>
     </div>
   `;
 
@@ -932,10 +1004,13 @@ function renderFinanceData() {
   const isExcluded   = r => r.instructor === 'mj' || r.instructor === 'jy';
   // 전체 매출 총합 (신규+재등록+기타 모두 포함, mj·jy 제외)
   const fullTotal    = incomes.filter(r => !isExcluded(r)).reduce((s, r) => s + r.amount, 0);
-  // 강사별 총합 = 본인 직접 매출 + 공용 매출의 50%
+  // 강사별 = 직접 매출 + 공용 매출의 50%
   const sharedAll    = incomes.filter(r => r.instructor === 'shared').reduce((s, r) => s + r.amount, 0);
-  const koTotal      = incomes.filter(r => r.instructor === 'ko').reduce((s, r) => s + r.amount, 0)  + sharedAll * 0.5;
-  const leeTotal     = incomes.filter(r => r.instructor === 'lee').reduce((s, r) => s + r.amount, 0) + sharedAll * 0.5;
+  const sharedHalf   = sharedAll * 0.5;
+  const koDirect     = incomes.filter(r => r.instructor === 'ko').reduce((s, r) => s + r.amount, 0);
+  const leeDirect    = incomes.filter(r => r.instructor === 'lee').reduce((s, r) => s + r.amount, 0);
+  const koTotal      = koDirect  + sharedHalf;
+  const leeTotal     = leeDirect + sharedHalf;
   const srcTag = r => r.source && r.source !== 'manual'
     ? ` <span style="font-size:10px;color:var(--text-muted)">[${escHtml(r.source)}]</span>` : '';
 
@@ -967,9 +1042,16 @@ function renderFinanceData() {
         </tr>`
     ).join('');
 
+  // 강사별 — 직접 / 공용50% / 총합 3분할 표시
+  const breakdown = (direct, half, total, color) => `
+    <span style="color:${color};font-size:12px">직접 ${fmtMoney(direct)}</span>
+    <span style="color:var(--text-muted);font-size:11px;margin:0 6px">+</span>
+    <span style="color:${color};font-size:12px">공용 ${fmtMoney(half)}</span>
+    <span style="color:var(--text-muted);font-size:11px;margin:0 6px">=</span>
+    <span style="color:${color};font-weight:700">${fmtMoney(total)}</span>`;
+  document.getElementById('fi-total-ko').innerHTML  = breakdown(koDirect,  sharedHalf, koTotal,  'var(--ko-color)');
+  document.getElementById('fi-total-lee').innerHTML = breakdown(leeDirect, sharedHalf, leeTotal, 'var(--lee-color)');
   document.getElementById('fi-total').innerHTML     = `<strong>${fmtMoney(fullTotal)}</strong>`;
-  document.getElementById('fi-total-ko').innerHTML  = `<span style="color:var(--ko-color);font-weight:600">${fmtMoney(koTotal)}</span>`;
-  document.getElementById('fi-total-lee').innerHTML = `<span style="color:var(--lee-color);font-weight:600">${fmtMoney(leeTotal)}</span>`;
 
   // ── 공용지출 테이블 ──
   document.getElementById('fe-tbody').innerHTML = expenses.length === 0
@@ -987,8 +1069,11 @@ function renderFinanceData() {
         </tr>`
     ).join('');
 
-  document.getElementById('fe-total').innerHTML =
-    `<strong>${fmtMoney(expenses.reduce((s, r) => s + r.amount, 0))}</strong>`;
+  const expTotal = expenses.reduce((s, r) => s + r.amount, 0);
+  document.getElementById('fe-total').innerHTML      = `<strong>${fmtMoney(expTotal)}</strong>`;
+  document.getElementById('fe-total-half').innerHTML =
+    `<span style="color:var(--text-muted);font-size:12px">각자 부담</span> `
+    + `<strong style="color:var(--danger)">${fmtMoney(Math.round(expTotal / 2))}</strong>`;
 
   // ── 개인지출 테이블 ──
   document.getElementById('fp-tbody').innerHTML = privateExpenses.length === 0
@@ -1181,65 +1266,6 @@ function enterEditMode(row) {
 }
 
 // ════════════════════════════════
-// 누적 신규 매출 — 현재달 + 모든 달 합산
-// ════════════════════════════════
-/**
- * 단일 월 데이터에서 강사별 신규 매출(직접 + 공용 50%) 을 계산합니다.
- * 신규 = isRenewal === false && isMisc === false
- */
-function calcMonthNewIncome(monthData, inst) {
-  const isNew     = r => !r.isRenewal && !r.isMisc;
-  const incomes   = monthData.incomes || [];
-  const direct    = incomes.filter(r => r.instructor === inst && isNew(r)).reduce((s, r) => s + r.amount, 0);
-  const sharedNew = incomes.filter(r => r.instructor === 'shared' && isNew(r)).reduce((s, r) => s + r.amount, 0);
-  return direct + sharedNew * 0.5;
-}
-
-function renderCumulativeIncome(currentData) {
-  const wrap = document.getElementById('fin-cumulative');
-  if (!wrap) return;
-
-  const curKo  = calcMonthNewIncome(currentData, 'ko');
-  const curLee = calcMonthNewIncome(currentData, 'lee');
-
-  // 모든 월 누적
-  let cumKo = 0, cumLee = 0;
-  const finance = DB._d.finance || {};
-  Object.keys(finance).forEach(mk => {
-    const md = DB.financeGet(mk);
-    cumKo  += calcMonthNewIncome(md, 'ko');
-    cumLee += calcMonthNewIncome(md, 'lee');
-  });
-
-  wrap.innerHTML = `
-    <div class="fin-cumulative-card">
-      <div class="fin-cumulative-title">📈 신규 매출 총합</div>
-      <table class="fin-cumulative-table">
-        <thead>
-          <tr>
-            <th></th>
-            <th>현재달</th>
-            <th>누적 (모든 달)</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><span class="badge-ko">고희재</span></td>
-            <td style="color:var(--ko-color);font-weight:700">${fmtMoney(curKo)}</td>
-            <td style="color:var(--ko-color);font-weight:700">${fmtMoney(cumKo)}</td>
-          </tr>
-          <tr>
-            <td><span class="badge-lee">이건우</span></td>
-            <td style="color:var(--lee-color);font-weight:700">${fmtMoney(curLee)}</td>
-            <td style="color:var(--lee-color);font-weight:700">${fmtMoney(cumLee)}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-// ════════════════════════════════
 // 결산 리포트
 // ════════════════════════════════
 function renderReport(data) {
@@ -1293,9 +1319,6 @@ function renderReport(data) {
         </div>
       </div>`;
   }).join('');
-
-  // 결산 카드 아래 — 신규 매출 누적 섹션
-  renderCumulativeIncome(data);
 }
 
 // ════════════════════════════════
@@ -1445,14 +1468,39 @@ function bindFinanceEvents() {
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
     fiAddBusy = true;
-    SM.addIncome({
+    const inst       = document.getElementById('fi-inst').value;
+    const memberName = document.getElementById('fi-name').value.trim();
+    const newIncome  = SM.addIncome({
       date, amount,
-      instructor: document.getElementById('fi-inst').value,
-      name:       document.getElementById('fi-name').value.trim(),
+      instructor: inst,
+      name:       memberName,
       payMethod,
       isRenewal:  incomeIsRenewal,
       ...(fiIsAuto && { isAuto: true }),
     });
+
+    // ── 매출일지 자동 기입 ──
+    // 강사가 ko/lee 인 신규/재등록 매출은 매출일지에도 confirmed 로 자동 등록
+    // (shared/empty/mj/jy 는 매출일지 회원 추적 대상이 아니므로 제외)
+    if ((inst === 'ko' || inst === 'lee') && !fiIsAuto) {
+      const slEntry = DB.salesLogsAdd({
+        date,
+        month:        finMonth,
+        instructor:   inst,
+        memberName,
+        amount,
+        type:         incomeIsRenewal ? 'renewal' : 'new',
+        payMethod,
+        status:       'confirmed',
+        linkedMonth:  finMonth,
+        linkedId:     newIncome.id,
+        linkedAmount: amount,
+        source:       'finance',  // 결산 폼에서 생성된 항목임을 표시
+      });
+      // finance income 에 역연결
+      DB.financeUpdateIncome(finMonth, newIncome.id, { salesLogId: slEntry.id });
+    }
+
     fiIsAuto  = false;
     fiAddBusy = false;
     showToast('매출을 추가했습니다');

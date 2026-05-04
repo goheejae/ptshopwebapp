@@ -157,6 +157,82 @@ function renderSalesLogStats(entries) {
 }
 
 // ════════════════════════════════
+// 누적 신규회원 현황 — 매출일지 전체 + finance 신규 통합
+// ════════════════════════════════
+/**
+ * 모든 월의 매출일지(type='new') + finance.incomes(신규=isRenewal·isMisc 둘 다 false)
+ * 를 합산하여 강사별 고유 회원 수 / 총 매출액 / 확정·대기 분리 통계를 만듭니다.
+ *
+ * 중복 방지: salesLog 와 finance.income 이 linked 된 경우엔 매출일지 쪽으로 카운트하고
+ *           finance 쪽은 (salesLogId 가 있는 항목) 스킵합니다.
+ */
+function renderCumulativeNewMembers() {
+  const wrap = document.getElementById('sl-cumulative');
+  if (!wrap) return;
+
+  const stats = inst => {
+    const memberSet = new Set();
+    let totalAmt = 0, confCnt = 0, pendCnt = 0, confAmt = 0, pendAmt = 0;
+
+    // 매출일지 — 모든 월, 신규만
+    Object.values(DB._d.salesLogs || {}).forEach(e => {
+      if (!e || e.instructor !== inst) return;
+      if (e.type === 'renewal') return;
+      const name = (e.memberName || '').trim();
+      if (name) memberSet.add(name);
+      const amt = e.status === 'confirmed' ? (e.linkedAmount ?? e.amount) : e.amount;
+      totalAmt += amt;
+      if (e.status === 'confirmed') { confCnt++; confAmt += amt; }
+      else                          { pendCnt++; pendAmt += amt; }
+    });
+
+    // finance — 모든 월, 신규(isRenewal=false && isMisc=false), 매출일지에 연결되지 않은 것만
+    Object.keys(DB._d.finance || {}).forEach(mk => {
+      const md = DB.financeGet(mk);
+      (md.incomes || []).forEach(r => {
+        if (r.instructor !== inst) return;
+        if (r.isRenewal || r.isMisc) return;
+        if (r.salesLogId) return;   // 이미 매출일지에서 카운트됨
+        const name = (r.name || '').trim();
+        if (name) memberSet.add(name);
+        totalAmt += r.amount;
+        confCnt++; confAmt += r.amount;
+      });
+    });
+
+    return { memberCnt: memberSet.size, totalAmt, confCnt, pendCnt, confAmt, pendAmt };
+  };
+
+  const ko  = stats('ko');
+  const lee = stats('lee');
+
+  const card = (name, cls, s) => `
+    <div class="sl-stat-card">
+      <div class="sl-stat-name"><span class="badge-${cls}">${name}</span></div>
+      <div class="sl-stat-row">
+        <span class="sl-stat-label">신규회원 수 (고유 이름)</span>
+        <span class="sl-stat-val sl-stat-strong">${s.memberCnt}명</span>
+      </div>
+      <div class="sl-stat-row">
+        <span class="sl-stat-label">신규매출 합계</span>
+        <span class="sl-stat-val sl-stat-strong">${fmtMoney(s.totalAmt)}</span>
+      </div>
+      <div class="sl-stat-divider"></div>
+      <div class="sl-stat-row">
+        <span class="sl-stat-label" style="color:var(--success,#16a34a)">✓ 확정 ${s.confCnt}건</span>
+        <span class="sl-stat-val" style="color:var(--success,#16a34a)">${fmtMoney(s.confAmt)}</span>
+      </div>
+      <div class="sl-stat-row">
+        <span class="sl-stat-label" style="color:var(--text-muted)">⋯ 대기 ${s.pendCnt}건</span>
+        <span class="sl-stat-val" style="color:var(--text-muted)">${fmtMoney(s.pendAmt)}</span>
+      </div>
+    </div>
+  `;
+
+  wrap.innerHTML = `<div class="sl-stat-grid">${card('고희재', 'ko', ko)}${card('이건우', 'lee', lee)}</div>`;
+}
+
+// ════════════════════════════════
 // 메인 렌더 함수
 // ════════════════════════════════
 export function renderSalesLog() {
@@ -240,6 +316,14 @@ export function renderSalesLog() {
         </table>
       </div>
     </div>
+
+    <!-- 누적 신규회원 현황 (매출일지 + 결산 합산, 전체 기간) -->
+    <div class="fin-section">
+      <div class="fin-section-header-row">
+        <span>👥 신규회원 누적 현황 — 매출일지 + 결산 통합 (모든 기간)</span>
+      </div>
+      <div id="sl-cumulative"></div>
+    </div>
   `;
 
   bindSalesLogEvents();
@@ -274,6 +358,8 @@ function renderSalesLogData() {
 
   // 강사별 신규매출 현황 — 매출일지 entries 기반 (확정·대기 모두 포함, 재등록 제외)
   renderSalesLogStats(entries);
+  // 누적 신규회원 — 모든 월의 매출일지 + finance 신규 합산
+  renderCumulativeNewMembers();
 
   // pending 항목에 대해 스마트 매칭 실행
   const matchMap = {};
@@ -296,9 +382,10 @@ function buildRow(e, match) {
   const payLabel  = { card:'카드', cash:'현금', transfer:'계좌이체' }[e.payMethod] ?? e.payMethod;
   const isConf    = e.status === 'confirmed';
 
+  // 상태 배지 — 클릭으로 확정 ↔ 대기 토글
   const statusCell = isConf
-    ? `<span class="sl-badge confirmed">✅ 확정</span>`
-    : `<span class="sl-badge pending">🔵 대기</span>`;
+    ? `<span class="sl-badge confirmed sl-status-toggle" data-id="${escHtml(e.id)}" title="클릭하여 대기로 되돌리기">✅ 확정</span>`
+    : `<span class="sl-badge pending sl-status-toggle" data-id="${escHtml(e.id)}" title="클릭하여 확정 처리">🔵 대기</span>`;
 
   let matchCell;
   if (isConf) {
@@ -365,6 +452,18 @@ function bindRowEvents() {
   // ↩️ 승인 취소
   document.querySelectorAll('.sl-cancel-btn').forEach(btn => {
     btn.addEventListener('click', () => cancelConfirm(btn.dataset.id));
+  });
+
+  // 🟢 상태 배지 클릭 — 확정 ↔ 대기 토글
+  document.querySelectorAll('.sl-status-toggle').forEach(badge => {
+    badge.addEventListener('click', ev => {
+      ev.stopPropagation();   // 행 클릭(편집 모드) 방지
+      const id = badge.dataset.id;
+      const e  = DB.salesLogsGetById(id);
+      if (!e) return;
+      if (e.status === 'confirmed') cancelConfirm(id);
+      else                          confirmManual(id);
+    });
   });
 
   // ✕ 삭제
