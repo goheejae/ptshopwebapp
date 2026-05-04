@@ -540,46 +540,17 @@ function confirmWithMatch(slId, matchMonth, matchIncomeId, bankAmt) {
 }
 
 /**
- * 수동 확정 — 이미 자동 매칭으로 link 가 걸린 경우엔 그 finance.income 을 그대로 쓰고
- * status 만 confirmed 로. link 가 없을 때만 새 finance.income 신규 생성.
+ * 수동 확정 — 매출일지 status 만 'confirmed' 로 변경합니다.
+ * finance.income 은 절대 새로 만들지 않음 (사용자 요구: sl → finance 데이터 흐름 차단).
+ *  - 자동 매칭으로 link 가 이미 있으면 그대로 사용 (link 메타만)
+ *  - link 없으면 sl 만 confirmed (결산 row 는 생성되지 않음 — 결산은 통장/엑셀로만)
  */
 function confirmManual(slId) {
   const entry = DB.salesLogsGetById(slId);
   if (!entry) return;
-
-  // (1) 이미 자동 매칭된 finance.income 이 있으면 그걸 그대로 사용 (finance 데이터는 변경 금지)
-  if (entry.linkedId && entry.linkedMonth) {
-    const finData   = DB.financeGet(entry.linkedMonth);
-    const linkedInc = (finData.incomes || []).find(i => i.id === entry.linkedId);
-    if (linkedInc) {
-      DB.salesLogsUpdate(slId, { status: 'confirmed' });
-      renderSalesLogData();
-      showToast(`✓ 확정 — 매칭 입금 ${fmtMoney(linkedInc.amount)} 그대로 사용`);
-      return;
-    }
-  }
-
-  // (2) link 없음 — 새 finance.income 생성 (현금 등 은행 기록 없는 경우)
-  const newIncome = DB.financeAddIncome(slMonth, {
-    date:       entry.date,
-    instructor: entry.instructor,
-    name:       entry.memberName,
-    amount:     entry.amount,
-    payMethod:  entry.payMethod,
-    isRenewal:  entry.type === 'renewal',
-    source:     'saleslog',
-    salesLogId: slId,
-  });
-
-  DB.salesLogsUpdate(slId, {
-    status:       'confirmed',
-    linkedMonth:  slMonth,
-    linkedId:     newIncome.id,
-    linkedAmount: entry.amount,
-  });
-
+  DB.salesLogsUpdate(slId, { status: 'confirmed' });
   renderSalesLogData();
-  showToast(`💵 수동 확정 — ${fmtMoney(entry.amount)} 정산 반영`);
+  showToast(`✓ 확정 — 매출일지에만 반영 (결산 미수정)`);
 }
 
 /**
@@ -682,16 +653,7 @@ function enterEditMode(row) {
       patch[el.name] = el.name === 'amount' ? (parseInt(el.value, 10) || 0) : el.value;
     });
     DB.salesLogsUpdate(id, patch);
-
-    // 확정 상태면 연결된 finance income도 실시간 업데이트
-    if (e.status === 'confirmed' && e.linkedMonth && e.linkedId) {
-      DB.financeUpdateIncome(e.linkedMonth, e.linkedId, {
-        instructor: patch.instructor ?? e.instructor,
-        name:       patch.memberName ?? e.memberName,
-        isRenewal:  (patch.type ?? e.type) === 'renewal',
-      });
-    }
-
+    // finance.income 으로의 데이터 동기화 제거 — sl 편집은 sl 안에서만 머무름
     renderSalesLogData();
     showToast('수정했습니다');
   });
