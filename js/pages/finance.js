@@ -397,10 +397,11 @@ function syncSalesLogOnIncomeDelete(income) {
 
 /**
  * 신규 추가된 finance income 에 대해 pending 상태의 매출일지 entry 중
- * 금액(3%)·날짜(±5일) 조건을 만족하는 최적 후보를 찾습니다.
+ * 금액(3%)·날짜 조건을 만족하는 최적 후보를 찾습니다.
  *
- * 카드사 입금은 보통 결제일로부터 1~4일 후 통장에 들어오므로
- *   bank_date - sl_date ∈ [-1, +5] 일 범위 내에서만 매칭합니다.
+ * 카드사 입금은 결제일 당일~5일 후 통장에 들어오므로
+ *   bank_date - sl_date ∈ [0, +5] 일 범위 내에서만 매칭합니다.
+ *   (결제일보다 이전 날짜의 입금은 별개 거래로 간주, 매칭하지 않음)
  *
  * 이름 유사성 보너스, 이미 confirmed 된 sl 은 자동 제외.
  *
@@ -419,9 +420,9 @@ function findMatchingPendingSalesLog(financeIncome) {
     const amtRatio = Math.abs(financeIncome.amount - sl.amount) / sl.amount;
     if (amtRatio > 0.03) continue;
 
-    // 입금일은 결제일 같거나 이후 1~5일 (드물게 -1일 정정 입금도 허용)
+    // 카드 결제일(sl.date) ≤ 통장 입금일(financeIncome.date) 만 매칭 — 결제 전 입금은 별개 거래
     const ms     = (new Date(financeIncome.date) - new Date(sl.date)) / 86400000;
-    if (isNaN(ms) || ms < -1 || ms > 5) continue;
+    if (isNaN(ms) || ms < 0 || ms > 5) continue;
 
     let score = 100 - amtRatio * 500 - Math.abs(ms) * 8;
 
@@ -571,10 +572,9 @@ function handleExcelUpload(file) {
               ...(slMatch && { salesLogId: slMatch.id }),
             });
 
-            // 3) 매출일지 entry 도 confirmed 로 자동 전환 + linkedAmount 에 실입금액 기록
+            // 3) 매출일지 entry 와 link 만 — 상태는 pending 유지 (운영자 수동 확인)
             if (slMatch) {
               DB.salesLogsUpdate(slMatch.id, {
-                status:       'confirmed',
                 linkedMonth:  finMonth,
                 linkedId:     newIncome.id,
                 linkedAmount: amt,
@@ -1543,19 +1543,32 @@ function bindFinanceEvents() {
     fiAddBusy = true;
     const inst       = document.getElementById('fi-inst').value;
     const memberName = document.getElementById('fi-name').value.trim();
-    const newIncome  = SM.addIncome({
+
+    // 1) 매출일지 pending 항목 중 매칭 후보부터 탐색 — 있으면 회원명·강사·유형을 sl 에서 가져옴
+    const slMatch = findMatchingPendingSalesLog({ date, amount, name: memberName });
+    const usedInst       = slMatch ? slMatch.instructor                    : inst;
+    const usedName       = slMatch ? slMatch.memberName                    : memberName;
+    const usedIsRenewal  = slMatch ? (slMatch.type === 'renewal')          : incomeIsRenewal;
+
+    const newIncome = SM.addIncome({
       date, amount,
-      instructor: inst,
-      name:       memberName,
+      instructor: usedInst,
+      name:       usedName,
       payMethod,
-      isRenewal:  incomeIsRenewal,
+      isRenewal:  usedIsRenewal,
       ...(fiIsAuto && { isAuto: true }),
+      ...(slMatch && { salesLogId: slMatch.id }),
     });
 
-    // ── 매출일지 자동 기입 ──
-    // 강사가 ko/lee 인 신규/재등록 매출은 매출일지에도 confirmed 로 자동 등록
-    // (shared/empty/mj/jy 는 매출일지 회원 추적 대상이 아니므로 제외)
-    if ((inst === 'ko' || inst === 'lee') && !fiIsAuto) {
+    if (slMatch) {
+      // 기존 매출일지 entry 와 link 만 (상태는 pending 유지)
+      DB.salesLogsUpdate(slMatch.id, {
+        linkedMonth:  finMonth,
+        linkedId:     newIncome.id,
+        linkedAmount: amount,
+      });
+    } else if ((inst === 'ko' || inst === 'lee') && memberName && !fiIsAuto) {
+      // 매칭 없음 + 강사 ko/lee + 회원명 입력됨 → 매출일지에도 pending 으로 기입
       const slEntry = DB.salesLogsAdd({
         date,
         month:        finMonth,
@@ -1564,19 +1577,18 @@ function bindFinanceEvents() {
         amount,
         type:         incomeIsRenewal ? 'renewal' : 'new',
         payMethod,
-        status:       'confirmed',
+        status:       'pending',          // 운영자가 매출일지에서 직접 클릭으로 확정
         linkedMonth:  finMonth,
         linkedId:     newIncome.id,
         linkedAmount: amount,
-        source:       'finance',  // 결산 폼에서 생성된 항목임을 표시
+        source:       'finance',
       });
-      // finance income 에 역연결
       DB.financeUpdateIncome(finMonth, newIncome.id, { salesLogId: slEntry.id });
     }
 
     fiIsAuto  = false;
     fiAddBusy = false;
-    showToast('매출을 추가했습니다');
+    showToast(slMatch ? `매출일지 매칭 — ${slMatch.memberName} 추가됨` : '매출을 추가했습니다');
 
     document.getElementById('fi-amount').value = '';
     document.getElementById('fi-name').value   = '';

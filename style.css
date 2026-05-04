@@ -754,6 +754,9 @@ body.sidebar-collapsed #main { margin-left: 0; }
   font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
   background: #fef3c7; color: #b45309;
 }
+/* 상담자별 색상 — 고희재(인디고) / 이건우(에메랄드) */
+.ot-badge.ot-badge-ko  { background: var(--ko-bg);  color: var(--ko-color);  border: 1px solid #c7d2fe; }
+.ot-badge.ot-badge-lee { background: var(--lee-bg); color: var(--lee-color); border: 1px solid #a7f3d0; }
 .ot-item.ot-editing {
   border-left: 3px solid var(--accent);
   background: #f0f4ff;

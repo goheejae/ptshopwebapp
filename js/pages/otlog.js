@@ -85,7 +85,7 @@ export function renderOtLog() {
           <li class="todo-item ot-item${editingId === l.id ? ' ot-editing' : ''}${l.isRegistered ? ' ot-registered' : ''}" data-id="${l.id}">
             <div class="todo-body" style="flex:1">
               <div class="todo-top" style="flex-wrap:wrap;gap:4px">
-                <span class="ot-badge">${escHtml(l.writer || '—')}</span>
+                <span class="ot-badge ${l.writer === '고희재' ? 'ot-badge-ko' : l.writer === '이건우' ? 'ot-badge-lee' : ''}">${escHtml(l.writer || '—')}</span>
                 <span style="font-weight:700;font-size:0.97rem">${escHtml(l.name || '(이름 없음)')}</span>
                 <span style="font-size:0.88rem;color:#555">${escHtml(l.phone || '')}</span>
                 <span style="font-size:0.78rem;color:#888;margin-left:auto">${l.date}</span>

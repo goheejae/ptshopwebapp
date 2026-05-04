@@ -12,6 +12,8 @@ export function renderCallLog() {
 
     <div class="todo-input-section">
       <div class="todo-input-row">
+        <input type="date" id="call-date" value="${new Date().toISOString().slice(0,10)}"
+          title="전화 받은 날짜" style="border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;font-size:0.88rem;font-family:inherit"/>
         <input type="text" id="call-num" placeholder="전화번호" style="flex:1" />
         <select id="call-inst" style="border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;font-size:0.88rem">
           <option value="ko">고희재</option>
@@ -53,9 +55,9 @@ export function renderCallLog() {
     const num  = document.getElementById('call-num').value.trim();
     const note = document.getElementById('call-note').value.trim();
     const inst = document.getElementById('call-inst').value;
+    const date = document.getElementById('call-date').value || new Date().toISOString().slice(0, 10);
     if (!num) { showToast('전화번호를 입력해주세요'); return; }
 
-    const date = new Date().toISOString().slice(0, 10);
     DB.callLogsAdd({ num, note, inst, date });
     document.getElementById('call-num').value  = '';
     document.getElementById('call-note').value = '';

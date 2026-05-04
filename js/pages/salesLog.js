@@ -77,8 +77,9 @@ function findBestMatch(slEntry) {
       const amtRatio = Math.abs(inc.amount - slEntry.amount) / slEntry.amount;
       if (amtRatio > 0.03) continue;          // 금액 3% 초과 제외
 
-      const dd = dayDiff(inc.date, slEntry.date);
-      if (dd > 5) continue;                   // 날짜 5일 초과 제외
+      // 카드 결제일 < 통장 입금일 — 입금일이 결제일 이전이면 매칭 불가 (애매하면 미매칭으로 둠)
+      const dd = (new Date(inc.date) - new Date(slEntry.date)) / 86400000;
+      if (isNaN(dd) || dd < 0 || dd > 5) continue;
 
       let score = 100 - amtRatio * 500 - dd * 8;
 
@@ -186,13 +187,14 @@ function renderCumulativeNewMembers() {
       else                          { pendCnt++; pendAmt += amt; }
     });
 
-    // finance — 모든 월, 신규(isRenewal=false && isMisc=false), 매출일지에 연결되지 않은 것만
+    // finance — 모든 월, 신규(isRenewal=false && isMisc=false). 매출일지 link 가
+    // 살아있는 경우만 sl 측에서 이미 카운트되므로 스킵 (sl 삭제된 orphan link 는 finance 쪽에서 카운트)
     Object.keys(DB._d.finance || {}).forEach(mk => {
       const md = DB.financeGet(mk);
       (md.incomes || []).forEach(r => {
         if (r.instructor !== inst) return;
         if (r.isRenewal || r.isMisc) return;
-        if (r.salesLogId) return;   // 이미 매출일지에서 카운트됨
+        if (r.salesLogId && DB.salesLogsGetById(r.salesLogId)) return;  // 살아있는 sl 만 dedup
         const name = (r.name || '').trim();
         if (name) memberSet.add(name);
         totalAmt += r.amount;
@@ -397,10 +399,18 @@ function buildRow(e, match) {
   let matchCell;
   if (isConf) {
     const dispAmt = e.linkedAmount != null ? fmtMoney(e.linkedAmount) : fmtMoney(e.amount);
+    matchCell = `<div class="sl-confirmed-info"><span>입금 ${dispAmt}</span></div>`;
+  } else if (e.linkedId && e.linkedMonth) {
+    // 이미 자동 매칭이 걸려있는 pending — 매칭 내역 + 해제 버튼
+    const linkedInc = DB.financeGet(e.linkedMonth).incomes.find(i => i.id === e.linkedId);
+    const dispAmt   = linkedInc ? `${escHtml(linkedInc.date)}&nbsp;${fmtMoney(linkedInc.amount)}` : '(매칭 손상됨)';
     matchCell = `
-      <div class="sl-confirmed-info">
-        <span>입금 ${dispAmt}</span>
-        <button class="sl-cancel-btn fin-edit-cancel" data-id="${escHtml(e.id)}">↩️ 취소</button>
+      <div class="sl-match-box" style="background:#fff7ed;border-color:#fed7aa">
+        <span class="sl-match-hint" style="color:#9a3412" title="자동 매칭된 결산 입금">자동 매칭: ${dispAmt}</span>
+        <button class="sl-unmatch-btn" data-id="${escHtml(e.id)}"
+          style="background:#fff;border:1px solid #fb923c;color:#9a3412;padding:3px 9px;border-radius:5px;font-size:0.78rem;font-weight:600;cursor:pointer">
+          ✗ 매칭 해제
+        </button>
       </div>`;
   } else if (match) {
     matchCell = `
@@ -454,6 +464,14 @@ function bindRowEvents() {
   // 💵 수동 확정 (현금)
   document.querySelectorAll('.sl-manual-btn').forEach(btn => {
     btn.addEventListener('click', () => confirmManual(btn.dataset.id));
+  });
+
+  // ✗ 자동 매칭 해제 (잘못 매칭됐을 때)
+  document.querySelectorAll('.sl-unmatch-btn').forEach(btn => {
+    btn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      unmatchSalesLog(btn.dataset.id);
+    });
   });
 
   // ↩️ 승인 취소
@@ -526,11 +544,33 @@ function confirmWithMatch(slId, matchMonth, matchIncomeId, bankAmt) {
   showToast(`✅ 승인 완료 — 입금액 ${fmtMoney(bankAmt)} 정산 반영`);
 }
 
-/** 수동 확정 (현금 등 은행 기록 없음) — 원금으로 finance income 신규 생성 */
+/**
+ * 수동 확정 — 이미 자동 매칭으로 link 가 걸린 경우엔 그 finance.income 을 그대로 쓰고
+ * status 만 confirmed 로. link 가 없을 때만 새 finance.income 신규 생성.
+ */
 function confirmManual(slId) {
   const entry = DB.salesLogsGetById(slId);
   if (!entry) return;
 
+  // (1) 이미 자동 매칭된 finance.income 이 있으면 그걸 그대로 사용
+  if (entry.linkedId && entry.linkedMonth) {
+    const finData   = DB.financeGet(entry.linkedMonth);
+    const linkedInc = (finData.incomes || []).find(i => i.id === entry.linkedId);
+    if (linkedInc) {
+      // sl 정보를 finance income 에 한번 더 동기화 (수동 편집 반영)
+      DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, {
+        name:       entry.memberName,
+        instructor: entry.instructor,
+        isRenewal:  entry.type === 'renewal',
+      });
+      DB.salesLogsUpdate(slId, { status: 'confirmed' });
+      renderSalesLogData();
+      showToast(`✓ 확정 — 매칭 입금 ${fmtMoney(linkedInc.amount)} 그대로 사용`);
+      return;
+    }
+  }
+
+  // (2) link 없음 — 새 finance.income 생성 (현금 등 은행 기록 없는 경우)
   const newIncome = DB.financeAddIncome(slMonth, {
     date:       entry.date,
     instructor: entry.instructor,
@@ -551,6 +591,39 @@ function confirmManual(slId) {
 
   renderSalesLogData();
   showToast(`💵 수동 확정 — ${fmtMoney(entry.amount)} 정산 반영`);
+}
+
+/**
+ * 잘못된 자동 매칭을 풀어 sl 을 진짜 pending 상태로 되돌립니다.
+ *  - sl: linkedMonth/linkedId/linkedAmount 클리어
+ *  - finance.income: salesLogId 제거 + (자동 채워졌던 회원명·강사·재등록 여부 초기화)
+ *
+ * source==='excel' 이거나 isAuto 인 finance.income 은 회원/강사를 비웁니다.
+ * 사용자가 직접 입력한 finance.income 은 보존 — sl 만 분리.
+ */
+function unmatchSalesLog(slId) {
+  const entry = DB.salesLogsGetById(slId);
+  if (!entry || !entry.linkedId || !entry.linkedMonth) return;
+
+  const finData   = DB.financeGet(entry.linkedMonth);
+  const linkedInc = (finData.incomes || []).find(i => i.id === entry.linkedId);
+
+  if (linkedInc) {
+    const isAutoImported = linkedInc.isAuto || linkedInc.source === 'excel';
+    DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, {
+      salesLogId: null,
+      ...(isAutoImported && { name: '', instructor: '', isRenewal: false }),
+    });
+  }
+
+  DB.salesLogsUpdate(slId, {
+    linkedMonth:  null,
+    linkedId:     null,
+    linkedAmount: null,
+  });
+
+  renderSalesLogData();
+  showToast('매칭을 해제했습니다 — 다시 대기 상태');
 }
 
 /** 승인 취소 — finance 연결 해제 후 pending 복귀 */
@@ -684,7 +757,7 @@ function bindSalesLogEvents() {
     const amount = parseInt(document.getElementById('sl-amount').value, 10) || 0;
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
-    DB.salesLogsAdd({
+    const slEntry = DB.salesLogsAdd({
       month:        slMonth,
       date,
       instructor:   document.getElementById('sl-inst').value,
@@ -698,9 +771,63 @@ function bindSalesLogEvents() {
       linkedAmount: null,
     });
 
+    // ── 자동 매칭: 이미 결산에 등록된 finance.income 중 매칭 후보 찾아서 즉시 link ──
+    // (회원명·강사 비어있던 finance income 에 sl 정보 채움 — 상태는 pending 유지)
+    const finMatch = findUnlinkedFinanceIncome(slEntry);
+    if (finMatch) {
+      DB.financeUpdateIncome(finMatch.month, finMatch.income.id, {
+        salesLogId: slEntry.id,
+        name:       slEntry.memberName,
+        instructor: slEntry.instructor,
+        isRenewal:  slEntry.type === 'renewal',
+      });
+      DB.salesLogsUpdate(slEntry.id, {
+        linkedMonth:  finMatch.month,
+        linkedId:     finMatch.income.id,
+        linkedAmount: finMatch.income.amount,
+      });
+      showToast(`결산 매출과 자동 매칭됨 (${fmtMoney(finMatch.income.amount)}) — 상태는 대기`);
+    } else {
+      showToast('매출을 등록했습니다');
+    }
+
     document.getElementById('sl-amount').value = '';
     document.getElementById('sl-member').value = '';
     renderSalesLogData();
-    showToast('매출을 등록했습니다');
   });
+}
+
+/**
+ * 새로 추가된 매출일지 entry 에 대해, 이미 결산에 등록되었지만 아직 sl 과
+ * 연결되지 않은 finance.income 중 금액(3%)·날짜(±5일) 조건을 만족하는 최적
+ * 후보를 찾습니다. 카드사 입금 1~4일 지연을 고려해 입금일 ≥ 결제일 -1 ~ +5.
+ */
+function findUnlinkedFinanceIncome(slEntry) {
+  let best = null, bestScore = -Infinity;
+  const slDate = new Date(slEntry.date);
+
+  for (const month of Object.keys(DB._d.finance || {})) {
+    const md = DB.financeGet(month);
+    for (const inc of (md.incomes || [])) {
+      if (!inc) continue;
+      if (inc.salesLogId)  continue;     // 이미 다른 sl 에 연결
+      if (inc.isMisc)      continue;     // 기타는 매출일지 대상 아님
+      if (!inc.amount || !inc.date) continue;
+
+      const amtRatio = Math.abs(inc.amount - slEntry.amount) / slEntry.amount;
+      if (amtRatio > 0.03) continue;
+      // 통장 입금일은 결제일 이후만 (이전 입금은 별개 거래로 보고 매칭 불가)
+      const days = (new Date(inc.date) - slDate) / 86400000;
+      if (isNaN(days) || days < 0 || days > 5) continue;
+
+      let score = 100 - amtRatio * 500 - Math.abs(days) * 8;
+      if (inc.name && slEntry.memberName) {
+        const n1 = inc.name.replace(/\s/g, '');
+        const n2 = slEntry.memberName.replace(/\s/g, '');
+        if (n1 && n2 && (n1.includes(n2) || n2.includes(n1))) score += 30;
+      }
+      if (score > bestScore) { best = { month, income: inc }; bestScore = score; }
+    }
+  }
+  return best;
 }
