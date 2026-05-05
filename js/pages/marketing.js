@@ -11,6 +11,12 @@ const CHANNELS = [
 
 const COST_CHANNELS = ['네이버 블로그', '인스타그램', '당근마켓', '플레이스', '기타'];
 
+// Sensor 검증 상수
+const SENSOR_FORBIDDEN = ['살빼기', '땀빼기', '저렴한', '할인', '이벤트가격'];
+const SENSOR_BRAND_KW  = ['핏플랜', '압구정PT', '압구정 PT', '체형교정', '프라이빗', 'exbody', 'EXBODY'];
+const SENSOR_SEO_KW    = ['압구정PT', '압구정 PT', '강남퍼스널트레이닝', '강남 퍼스널트레이닝', '체형교정'];
+const SENSOR_LENGTH    = { blog: { min: 2500, max: 3000, label: '2500~3000자' }, instagram: { max: 300, label: '300자 이내' }, karrot: { max: 300, label: '300자 이내' }, place: { max: 200, label: '200자 이내' } };
+
 let _state = {};
 
 export function renderMarketing() {
@@ -620,6 +626,71 @@ async function _handleMktAiChat() {
   }
 }
 
+function _runSensor(channelId, text) {
+  const results = [];
+
+  // 1. 금지 단어
+  const found = SENSOR_FORBIDDEN.filter(w => text.includes(w));
+  const dietAlone = /다이어트(?!\s*가\s*아닌)/.test(text);
+  const forbidOk  = found.length === 0 && !dietAlone;
+  results.push({
+    label: '금지 단어',
+    ok:    forbidOk,
+    detail: forbidOk ? '없음' : `발견: ${[...found, dietAlone ? '다이어트(단독)' : ''].filter(Boolean).join(', ')}`,
+  });
+
+  // 2. 브랜드 키워드
+  const hasBrand = SENSOR_BRAND_KW.some(kw => text.toLowerCase().includes(kw.toLowerCase()));
+  results.push({
+    label: '브랜드 키워드',
+    ok:    hasBrand,
+    detail: hasBrand ? '포함' : '미포함 — 핏플랜/압구정PT/체형교정 등 추가 필요',
+  });
+
+  // 3. 분량
+  const rule = SENSOR_LENGTH[channelId];
+  if (rule) {
+    const len   = text.length;
+    const lenOk = (!rule.min || len >= rule.min) && len <= rule.max;
+    results.push({ label: '분량', ok: lenOk, detail: `${len.toLocaleString()}자 (기준: ${rule.label})` });
+  }
+
+  // 4. SEO 키워드 (블로그만)
+  if (channelId === 'blog') {
+    const seoFound = SENSOR_SEO_KW.filter(kw => text.includes(kw));
+    const seoOk    = seoFound.length >= 2;
+    results.push({
+      label: 'SEO 키워드',
+      ok:    seoOk,
+      detail: seoOk ? `포함 (${seoFound.join(' · ')})` : '부족 — 압구정PT · 강남퍼스널트레이닝 · 체형교정 각 1회 이상',
+    });
+  }
+
+  return results;
+}
+
+function _sensorHtml(channelId) {
+  const results = _runSensor(channelId, _state.drafts[channelId] || '');
+  const allOk   = results.every(r => r.ok);
+  return `
+    <div class="mkt-sensor">
+      <div class="mkt-sensor-header">
+        <span class="mkt-sensor-title">🔍 Sensor 검증</span>
+        <span class="mkt-badge ${allOk ? 'mkt-badge-green' : 'mkt-badge-warn'}">
+          ${allOk ? '✅ 통과' : '⚠️ 수정 필요'}
+        </span>
+      </div>
+      <div class="mkt-sensor-list">
+        ${results.map(r => `
+          <div class="mkt-sensor-item">
+            <span>${r.ok ? '✅' : '❌'}</span>
+            <span class="mkt-sensor-label">${r.label}</span>
+            <span class="mkt-sensor-detail ${r.ok ? '' : 'fail'}">${escHtml(r.detail)}</span>
+          </div>`).join('')}
+      </div>
+    </div>`;
+}
+
 function _renderDraftOutput(channels) {
   const output = document.getElementById('mkt-output-card');
   if (!output) return;
@@ -639,18 +710,21 @@ function _renderDraftOutput(channels) {
       }).join('')}
     </div>
     <div id="mkt-draft-content"
-      style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px;max-height:480px;overflow-y:auto">
+      style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px;max-height:340px;overflow-y:auto;margin-bottom:12px">
       <pre class="mkt-pre">${escHtml(_state.drafts[activeId] || '')}</pre>
     </div>
+    <div id="mkt-sensor">${_sensorHtml(activeId)}</div>
   `;
 
   output.querySelectorAll('[data-draft-tab]').forEach(btn => {
     btn.addEventListener('click', () => {
       output.querySelectorAll('[data-draft-tab]').forEach(t => t.classList.remove('active'));
       btn.classList.add('active');
-      _state.activeDraftTab = btn.dataset.draftTab;
+      const id = btn.dataset.draftTab;
+      _state.activeDraftTab = id;
       output.querySelector('#mkt-draft-content').innerHTML =
-        `<pre class="mkt-pre">${escHtml(_state.drafts[btn.dataset.draftTab] || '')}</pre>`;
+        `<pre class="mkt-pre">${escHtml(_state.drafts[id] || '')}</pre>`;
+      output.querySelector('#mkt-sensor').innerHTML = _sensorHtml(id);
     });
   });
 

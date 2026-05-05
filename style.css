@@ -2347,3 +2347,41 @@ body.sidebar-collapsed #main { margin-left: 0; }
   .mkt-ai-bubble { max-width: 90%; }
   .ops-preview-card { max-width: 90%; }
 }
+
+/* ── Sensor 검증 패널 ── */
+.mkt-sensor {
+  background: #0a1628;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.mkt-sensor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.mkt-sensor-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.mkt-badge-green { background: #052e16; color: #4ade80; border: 1px solid #166534; }
+.mkt-badge-warn  { background: #431407; color: #fb923c; border: 1px solid #7c2d12; }
+.mkt-sensor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mkt-sensor-item {
+  display: grid;
+  grid-template-columns: 18px 90px 1fr;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.mkt-sensor-label { color: #94a3b8; font-weight: 500; }
+.mkt-sensor-detail { color: #64748b; }
+.mkt-sensor-detail.fail { color: #f87171; }
