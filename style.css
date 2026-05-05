@@ -2214,3 +2214,136 @@ body.sidebar-collapsed #main { margin-left: 0; }
   .mkt-tab-nav       { padding: 0 16px; }
   .mkt-kpi-grid      { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ── Chat UI (마케팅 AI + 운영 어시스턴트) ── */
+
+/* 마케팅 AI 탭 내 채팅 쉘 */
+.mkt-ai-shell {
+  display: flex;
+  flex-direction: column;
+  height: 520px;
+}
+
+/* 운영 어시스턴트 페이지 래퍼 */
+.ops-shell .mkt-header { padding-bottom: 16px; }
+.ops-chat-wrap {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--topbar-h) - 180px);
+  min-height: 400px;
+  padding: 0 24px 24px;
+}
+
+/* 메시지 스크롤 영역 */
+.mkt-ai-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  background: #070d1a;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  min-height: 0;
+}
+
+/* 메시지 행 */
+.mkt-ai-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.mkt-ai-row--user { flex-direction: row-reverse; }
+
+/* 아바타 */
+.mkt-ai-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #1e293b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* 말풍선 — bot */
+.mkt-ai-bubble {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 4px 12px 12px 12px;
+  padding: 10px 14px;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.75;
+  max-width: 78%;
+}
+
+/* 말풍선 — user */
+.mkt-ai-bubble--user {
+  background: #1e1b4b;
+  border: 1px solid #3730a3;
+  border-radius: 12px 4px 12px 12px;
+  color: #c7d2fe;
+}
+
+/* 입력행 */
+.mkt-ai-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.mkt-ai-input {
+  flex: 1;
+  resize: none;
+  min-height: 44px;
+  max-height: 120px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+/* 액션 미리보기 카드 */
+.ops-preview-card {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 16px;
+  max-width: 78%;
+}
+.ops-preview-title {
+  font-size: 11px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 10px;
+}
+.ops-preview-list {
+  list-style: none;
+  margin: 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ops-preview-item {
+  font-size: 13px;
+  color: #a5f3fc;
+  padding: 6px 10px;
+  background: #0a1628;
+  border-radius: 6px;
+}
+.ops-preview-item::before { content: "✅ "; }
+.ops-preview-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 600px) {
+  .mkt-ai-shell  { height: 420px; }
+  .ops-chat-wrap { height: calc(100vh - var(--topbar-h) - 220px); padding: 0 12px 16px; }
+  .mkt-ai-bubble { max-width: 90%; }
+  .ops-preview-card { max-width: 90%; }
+}

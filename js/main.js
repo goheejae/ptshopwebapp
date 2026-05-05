@@ -25,6 +25,7 @@ import { renderStats }     from './pages/stats.js';
 import { renderNotice }    from './pages/notice.js';
 import { renderSalesLog }  from './pages/salesLog.js';
 import { renderMarketing } from './pages/marketing.js';
+import { renderOps }       from './pages/ops.js';
 
 // ════════════════════════════════
 // 라우터
@@ -43,6 +44,7 @@ const pages = {
   notice:    renderNotice,
   salesLog:  renderSalesLog,
   marketing: renderMarketing,
+  ops:       renderOps,
 };
 
 /** 현재 활성화된 페이지 이름 */

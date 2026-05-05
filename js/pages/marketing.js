@@ -22,6 +22,7 @@ export function renderMarketing() {
     drafts: {},
     uploadedFile: null,
     generating: false,
+    aiHistory:  [],
   };
 
   document.getElementById('page-content').innerHTML = `
@@ -35,12 +36,14 @@ export function renderMarketing() {
         <button class="mkt-tab" data-tab="place">📍 플레이스</button>
         <button class="mkt-tab" data-tab="cost">💳 비용</button>
         <button class="mkt-tab" data-tab="insight">📊 인사이트</button>
+        <button class="mkt-tab" data-tab="ai">🤖 마케팅 AI</button>
       </nav>
       <div class="mkt-body">
         <div id="mkt-write"   class="mkt-panel active">${_writePanel()}</div>
         <div id="mkt-place"   class="mkt-panel">${_placePanel()}</div>
         <div id="mkt-cost"    class="mkt-panel">${_costPanelInner()}</div>
         <div id="mkt-insight" class="mkt-panel">${_insightPanel()}</div>
+        <div id="mkt-ai"      class="mkt-panel">${_aiPanel()}</div>
       </div>
     </div>
   `;
@@ -305,6 +308,30 @@ function _insightPanel() {
   `;
 }
 
+function _aiPanel() {
+  return `
+    <div class="mkt-ai-shell">
+      <div class="mkt-ai-messages" id="mkt-ai-messages">
+        <div class="mkt-ai-row mkt-ai-row--bot">
+          <div class="mkt-ai-avatar">🤖</div>
+          <div class="mkt-ai-bubble">
+            안녕하세요! <strong>마케팅 AI</strong>입니다.<br>
+            마케팅 현황 분석·전략 제안·채널별 조언을 도와드릴게요.<br><br>
+            <span style="color:#475569;font-size:12px">
+              "이번달 마케팅 효과 분석해줘" · "플레이스 순위 올리는 방법" · "다음 콘텐츠 뭐가 좋을까?"
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="mkt-ai-input-row">
+        <textarea id="mkt-ai-input" class="mkt-input mkt-ai-input"
+          placeholder="마케팅 관련 질문을 입력하세요..." rows="2"></textarea>
+        <button class="mkt-btn mkt-btn-primary" id="mkt-ai-send" style="padding:10px 20px">전송</button>
+      </div>
+    </div>
+  `;
+}
+
 /* ── Event binding ───────────────────────────────────── */
 
 function _bindEvents() {
@@ -387,6 +414,12 @@ function _bindEvents() {
       DB.mktContentDel(id);
       _rerenderPanel('insight');
     }
+  });
+
+  // Marketing AI send
+  document.getElementById('mkt-ai-send').addEventListener('click', _handleMktAiChat);
+  document.getElementById('mkt-ai-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _handleMktAiChat(); }
   });
 }
 
@@ -499,6 +532,91 @@ async function _handleGenerate() {
     _state.generating = false;
     const b = document.getElementById('mkt-generate');
     if (b) { b.disabled = false; b.innerHTML = '✨ 콘텐츠 생성'; }
+  }
+}
+
+/* ── Marketing AI chat ───────────────────────────────── */
+
+function _appendMktAiMsg(role, html, id) {
+  const msgs = document.getElementById('mkt-ai-messages');
+  if (!msgs) return;
+  const row = document.createElement('div');
+  row.className = `mkt-ai-row mkt-ai-row--${role}`;
+  if (id) row.id = id;
+  row.innerHTML = role === 'bot'
+    ? `<div class="mkt-ai-avatar">🤖</div><div class="mkt-ai-bubble">${html}</div>`
+    : `<div class="mkt-ai-bubble mkt-ai-bubble--user">${html}</div>`;
+  msgs.appendChild(row);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function _buildMktAiSystemPrompt() {
+  const now       = new Date();
+  const today     = now.toISOString().slice(0, 10);
+  const monthKey  = today.slice(0, 7);
+  const costs     = DB.mktCostsGet(monthKey);
+  const total     = costs.reduce((s, c) => s + (c.amount || 0), 0);
+  const ranks     = DB.mktPlaceRanksGet().slice(0, 10);
+  const content   = DB.mktContentGetRecent(10);
+  const byChannel = {};
+  costs.forEach(c => { byChannel[c.channel] = (byChannel[c.channel] || 0) + (c.amount || 0); });
+
+  return `너는 핏플랜PT 전담 마케팅 AI 어드바이저야. 원장님의 마케팅 현황을 분석하고 실질적인 전략을 제안해줘.
+
+[스튜디오 프로필]
+- 이름: 핏플랜PT / 위치: 서울 강남구 압구정 로데오 2층 (30평대 프라이빗 PT)
+- 주요 타겟: 30대 여성, 중장년 여성(40~60대)
+- 차별화: exbody 정밀 체형분석 · 1:1 프라이빗 · 발렛파킹 · 프리미엄 시설
+- 운영 채널: 네이버 블로그 · 인스타그램 · 당근마켓 · 네이버 플레이스
+
+[이번 달(${monthKey}) 마케팅 현황]
+- 총 마케팅 비용: ${total.toLocaleString()}원 (${costs.length}건)
+- 채널별: ${Object.entries(byChannel).map(([ch, amt]) => `${ch} ${amt.toLocaleString()}원`).join(' / ') || '없음'}
+
+[네이버 플레이스 최근 순위 (최신 10건)]
+${ranks.length ? ranks.map(r => `  ${r.date} "${r.keyword}" ${r.rank}위`).join('\n') : '  기록 없음'}
+
+[최근 생성 콘텐츠 (10건)]
+${content.length ? content.map(c => `  ${c.createdAt.slice(0, 10)} [${(c.channels || []).join('/')}] ${c.topic || ''}`).join('\n') : '  없음'}
+
+[응답 규칙]
+- 한국어로 친근하고 전문적으로 답변
+- 데이터 기반 구체적 제안 우선
+- 마케팅 금기어(살빼기/저렴한/할인 등) 제안 금지
+- 브랜드 톤: 프리미엄·전문·신뢰`;
+}
+
+async function _handleMktAiChat() {
+  const input = document.getElementById('mkt-ai-input');
+  const msg   = input.value.trim();
+  if (!msg || _state.generating) return;
+
+  input.value = '';
+  _appendMktAiMsg('user', escHtml(msg));
+  _state.aiHistory.push({ role: 'user', content: msg });
+
+  const sendBtn = document.getElementById('mkt-ai-send');
+  sendBtn.disabled = true;
+  sendBtn.textContent = '...';
+
+  const loadId = 'mkt-ai-load-' + Date.now();
+  _appendMktAiMsg('bot', '<span class="mkt-spinner" style="width:16px;height:16px;border-width:2px;vertical-align:middle"></span> 분석 중...', loadId);
+
+  try {
+    const text = await callClaude({
+      system:   _buildMktAiSystemPrompt(),
+      messages: _state.aiHistory,
+    });
+    document.getElementById(loadId)?.remove();
+    _state.aiHistory.push({ role: 'assistant', content: text });
+    _appendMktAiMsg('bot', escHtml(text).replace(/\n/g, '<br>'));
+  } catch (err) {
+    document.getElementById(loadId)?.remove();
+    _appendMktAiMsg('bot', '❌ 오류가 발생했습니다. API 키 또는 네트워크를 확인하세요.');
+    console.error(err);
+  } finally {
+    sendBtn.disabled = false;
+    sendBtn.textContent = '전송';
   }
 }
 
