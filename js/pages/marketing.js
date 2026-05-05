@@ -28,7 +28,8 @@ export function renderMarketing() {
     drafts: {},
     uploadedFile: null,
     generating: false,
-    aiHistory:  [],
+    aiHistory:    [],
+    briefingDone: false,
   };
 
   document.getElementById('page-content').innerHTML = `
@@ -107,7 +108,12 @@ function _writePanel() {
 function _placePanel() {
   const ranks = DB.mktPlaceRanksGet();
   return `
-    <div class="mkt-two-col">
+    <div class="mkt-card" style="margin-bottom:20px">
+      <div class="mkt-card-title">📈 순위 추이</div>
+      ${_svgRankChart(ranks)}
+    </div>
+
+    <div class="mkt-two-col" style="margin-bottom:20px">
       <div class="mkt-card">
         <div class="mkt-card-title">순위 기록 추가</div>
         <form id="mkt-place-form">
@@ -125,12 +131,8 @@ function _placePanel() {
             </div>
           </div>
           <label class="mkt-label">메모</label>
-          <input id="mkt-pm" class="mkt-input" placeholder="메모 (선택)"
-            style="margin-bottom:16px">
-          <button type="submit"
-            class="mkt-btn mkt-btn-primary" style="width:100%;justify-content:center">
-            + 기록 추가
-          </button>
+          <input id="mkt-pm" class="mkt-input" placeholder="메모 (선택)" style="margin-bottom:16px">
+          <button type="submit" class="mkt-btn mkt-btn-primary" style="width:100%;justify-content:center">+ 기록 추가</button>
         </form>
       </div>
 
@@ -142,12 +144,38 @@ function _placePanel() {
         ${ranks.length === 0
           ? `<div class="mkt-empty"><span class="mkt-empty-icon">📍</span>기록된 순위가 없습니다</div>`
           : `<table class="mkt-table">
-              <thead><tr>
-                <th>날짜</th><th>키워드</th><th>순위</th><th>메모</th><th></th>
-              </tr></thead>
+              <thead><tr><th>날짜</th><th>키워드</th><th>순위</th><th>메모</th><th></th></tr></thead>
               <tbody>${ranks.map(r => _placeRow(r, ranks)).join('')}</tbody>
             </table>`
         }
+      </div>
+    </div>
+
+    <div class="mkt-card">
+      <div class="mkt-card-title">🤖 AI 플레이스 도구</div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+        <button class="mkt-btn mkt-btn-primary place-tool-btn" data-tool="news">📢 소식 문구</button>
+        <button class="mkt-btn mkt-btn-outline place-tool-btn" data-tool="review">💬 리뷰 답글</button>
+        <button class="mkt-btn mkt-btn-outline place-tool-btn" data-tool="thumb">🖼 썸네일 멘트</button>
+      </div>
+      <div id="place-tool-news" class="place-tool-section">
+        <textarea id="place-news-input" class="mkt-textarea" rows="3"
+          placeholder="소식 주제 (예: 5월 신규 회원 모집, exbody 체형분석 도입)"></textarea>
+        <button class="mkt-btn mkt-btn-primary" id="place-news-gen" style="margin-top:10px">✨ 문구 생성</button>
+      </div>
+      <div id="place-tool-review" class="place-tool-section" style="display:none">
+        <textarea id="place-review-input" class="mkt-textarea" rows="4"
+          placeholder="리뷰 내용을 붙여넣으세요..."></textarea>
+        <button class="mkt-btn mkt-btn-primary" id="place-review-gen" style="margin-top:10px">✨ 답글 초안 생성</button>
+      </div>
+      <div id="place-tool-thumb" class="place-tool-section" style="display:none">
+        <textarea id="place-thumb-input" class="mkt-textarea" rows="3"
+          placeholder="이미지 컨텍스트 (예: 압구정 로데오 프라이빗 스튜디오 내부, exbody 분석 중)"></textarea>
+        <button class="mkt-btn mkt-btn-primary" id="place-thumb-gen" style="margin-top:10px">✨ 멘트 추천</button>
+      </div>
+      <div id="place-ai-output" style="display:none;margin-top:16px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:16px;position:relative">
+        <button id="place-ai-copy" class="mkt-btn mkt-btn-ghost" style="position:absolute;top:10px;right:10px;font-size:11px">📋 복사</button>
+        <pre class="mkt-pre" id="place-ai-text" style="margin:0;white-space:pre-wrap;padding-right:60px"></pre>
       </div>
     </div>
   `;
@@ -168,6 +196,84 @@ function _placeRow(r, all) {
     <td style="color:#64748b">${escHtml(r.memo || '')}</td>
     <td><button class="mkt-btn mkt-btn-ghost" data-del-rank="${r.id}">✕</button></td>
   </tr>`;
+}
+
+function _svgRankChart(ranks) {
+  const keywords = [...new Set(ranks.map(r => r.keyword))];
+  if (!keywords.length)
+    return `<div class="mkt-empty" style="padding:24px"><span class="mkt-empty-icon">📈</span>순위 기록이 없습니다</div>`;
+  const dates = [...new Set(ranks.map(r => r.date))].sort();
+  if (dates.length < 2)
+    return `<div style="color:#64748b;font-size:13px;padding:12px;text-align:center">날짜가 2개 이상 기록되면 추이 그래프가 표시됩니다</div>`;
+
+  const colors = ['#818cf8','#34d399','#f97316','#f43f5e','#60a5fa'];
+  const W=560,H=180,pL=36,pR=16,pT=12,pB=28,cW=W-pL-pR,cH=H-pT-pB;
+  const allR = ranks.map(r=>r.rank);
+  const rMin=Math.min(...allR), rMax=Math.max(...allR), rRange=rMax-rMin||1;
+  const xOf = d => pL+(dates.indexOf(d)/(dates.length-1))*cW;
+  const yOf = r => pT+((r-rMin)/rRange)*cH;
+
+  const grid = [0,1,2,3,4].map(i => {
+    const rank=Math.round(rMin+(i/4)*rRange), y=yOf(rank);
+    return `<line x1="${pL}" y1="${y}" x2="${W-pR}" y2="${y}" stroke="#1e293b" stroke-width="1"/>
+      <text x="${pL-4}" y="${y+4}" text-anchor="end" fill="#475569" font-size="9">${rank}</text>`;
+  });
+  const step=Math.max(1,Math.floor(dates.length/5));
+  const xLbls=dates.filter((_,i)=>i%step===0||i===dates.length-1)
+    .map(d=>`<text x="${xOf(d)}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="9">${d.slice(5)}</text>`);
+  const series=keywords.map((kw,ki)=>{
+    const col=colors[ki%colors.length];
+    const pts=ranks.filter(r=>r.keyword===kw).sort((a,b)=>a.date.localeCompare(b.date));
+    const poly=pts.length>=2?`<polyline points="${pts.map(r=>`${xOf(r.date)},${yOf(r.rank)}`).join(' ')}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round"/>`:'';
+    const dots=pts.map(r=>`<circle cx="${xOf(r.date)}" cy="${yOf(r.rank)}" r="4" fill="${col}"><title>${kw} ${r.date}: ${r.rank}위</title></circle>`).join('');
+    return poly+dots;
+  });
+  const legend=keywords.map((kw,ki)=>`<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;font-size:12px"><span style="width:18px;height:3px;background:${colors[ki%colors.length]};border-radius:2px;display:inline-block"></span><span style="color:#cbd5e1">${escHtml(kw)}</span></span>`).join('');
+  return `<div style="margin-bottom:8px;display:flex;flex-wrap:wrap">${legend}</div>
+    <div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:280px;display:block">
+      ${grid.join('')}${xLbls.join('')}${series.join('')}
+    </svg></div>`;
+}
+
+function _svgCostChart() {
+  const now=new Date();
+  const months=Array.from({length:6},(_,i)=>{const d=new Date(now.getFullYear(),now.getMonth()-(5-i),1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;});
+  const data=months.map(m=>({m,total:DB.mktCostsGet(m).reduce((s,c)=>s+(c.amount||0),0)}));
+  if(!data.some(d=>d.total>0))
+    return `<div class="mkt-empty" style="padding:24px"><span class="mkt-empty-icon">💳</span>비용 데이터가 없습니다</div>`;
+  const W=560,H=140,pL=52,pR=16,pT=12,pB=28,cW=W-pL-pR,cH=H-pT-pB;
+  const maxV=Math.max(...data.map(d=>d.total),1);
+  const barW=cW/6*0.6, gap=cW/6;
+  const bars=data.map((d,i)=>{
+    const bH=(d.total/maxV)*cH||0, x=pL+i*gap+(gap-barW)/2, y=pT+cH-bH;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(bH,0).toFixed(1)}" fill="#818cf8" rx="3" opacity="0.85"/>
+      <text x="${(x+barW/2).toFixed(1)}" y="${H-4}" text-anchor="middle" fill="#475569" font-size="9">${d.m.slice(5)}월</text>
+      ${d.total>0?`<text x="${(x+barW/2).toFixed(1)}" y="${(y-4).toFixed(1)}" text-anchor="middle" fill="#a5b4fc" font-size="9">${(d.total/10000).toFixed(0)}만</text>`:''}`;
+  });
+  const yLbls=[0,0.5,1].map(r=>{const v=maxV*r,y=pT+cH-r*cH;return `<text x="${pL-4}" y="${y+4}" text-anchor="end" fill="#475569" font-size="9">${(v/10000).toFixed(0)}만</text><line x1="${pL}" y1="${y}" x2="${W-pR}" y2="${y}" stroke="#1e293b" stroke-width="1"/>`;});
+  return `<div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" style="width:100%;min-width:280px;display:block">
+    ${yLbls.join('')}${bars.join('')}
+  </svg></div>`;
+}
+
+function _detectRenewal() {
+  const now=new Date();
+  const allSales=[];
+  for(let i=0;i<8;i++){const d=new Date(now.getFullYear(),now.getMonth()-i,1);const mk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;allSales.push(...DB.salesLogsGetByMonth(mk));}
+  const byMember={};
+  allSales.forEach(s=>{if(!s.memberName||!s.date)return;if(!byMember[s.memberName]||s.date>byMember[s.memberName].date)byMember[s.memberName]=s;});
+  return Object.values(byMember).filter(s=>{const diff=(now-new Date(s.date))/86400000;return diff>=60&&diff<=150;}).sort((a,b)=>a.date.localeCompare(b.date));
+}
+
+function _renewalHtml(candidates) {
+  if(!candidates.length) return `<div style="color:#64748b;font-size:13px;padding:12px">재등록 임박 회원 없음</div>`;
+  return `<div style="display:flex;flex-direction:column;gap:8px">${candidates.map(s=>{
+    const days=Math.floor((new Date()-new Date(s.date))/86400000);
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:8px;border:1px solid #1e293b">
+      <div><strong style="color:#e2e8f0">${escHtml(s.memberName)}</strong><span style="color:#64748b;font-size:12px;margin-left:8px">등록 ${days}일 경과</span></div>
+      <button class="mkt-btn mkt-btn-outline renewal-sms-btn" data-member="${escHtml(s.memberName)}" data-date="${s.date}" style="font-size:12px;padding:5px 10px">📱 문자 초안</button>
+    </div>`;
+  }).join('')}</div>`;
 }
 
 function _costPanelInner() {
@@ -250,12 +356,12 @@ function _insightPanel() {
   const costs    = DB.mktCostsGet(monthKey);
   const total    = costs.reduce((s, c) => s + (c.amount || 0), 0);
   const allContent = DB.mktContentGetRecent(999);
-  const recent   = allContent.slice(0, 10);
   const ranks    = DB.mktPlaceRanksGet();
   const bestRank = ranks.length ? Math.min(...ranks.map(r => r.rank)) : null;
+  const renewals = _detectRenewal();
 
   return `
-    <div class="mkt-kpi-grid" style="margin-bottom:24px">
+    <div class="mkt-kpi-grid" style="margin-bottom:20px">
       <div class="mkt-kpi-card">
         <div class="mkt-kpi-label">이번 달 지출</div>
         <div class="mkt-kpi-value">${fmtMoney(total)}</div>
@@ -272,40 +378,63 @@ function _insightPanel() {
         <div class="mkt-kpi-sub">${ranks.length}건 기록</div>
       </div>
       <div class="mkt-kpi-card">
-        <div class="mkt-kpi-label">비용 추적 채널</div>
-        <div class="mkt-kpi-value">${new Set(costs.map(c => c.channel)).size}</div>
-        <div class="mkt-kpi-sub">개 채널</div>
+        <div class="mkt-kpi-label">재등록 임박</div>
+        <div class="mkt-kpi-value">${renewals.length}명</div>
+        <div class="mkt-kpi-sub">60~150일 경과</div>
       </div>
+    </div>
+
+    <div class="mkt-card" style="margin-bottom:20px">
+      <div class="mkt-card-title">월별 마케팅 비용 추이</div>
+      ${_svgCostChart()}
+    </div>
+
+    <div class="mkt-card" style="margin-bottom:20px">
+      <div class="mkt-section-header">
+        <span class="mkt-section-title">📊 AI 인사이트 & 일일 브리핑</span>
+        <button class="mkt-btn mkt-btn-primary" id="insight-ai-gen"
+          style="font-size:12px;padding:6px 14px">✨ 분석</button>
+      </div>
+      <div id="insight-ai-output">
+        <div class="mkt-empty" style="padding:32px">
+          <span class="mkt-empty-icon">🧠</span>
+          매출·마케팅·상담 데이터를 종합 분석합니다
+        </div>
+      </div>
+    </div>
+
+    <div class="mkt-card" style="margin-bottom:20px">
+      <div class="mkt-section-header">
+        <span class="mkt-section-title">🔔 재등록 임박 회원</span>
+        <span class="mkt-badge mkt-badge-purple">${renewals.length}명</span>
+      </div>
+      <div id="renewal-sms-output" style="display:none;margin-bottom:12px;
+        background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:14px">
+        <pre class="mkt-pre" id="renewal-sms-text" style="white-space:pre-wrap;margin:0"></pre>
+      </div>
+      ${_renewalHtml(renewals)}
     </div>
 
     <div class="mkt-card">
       <div class="mkt-section-header">
         <span class="mkt-section-title">최근 생성 콘텐츠</span>
       </div>
-      ${recent.length === 0
+      ${allContent.slice(0, 10).length === 0
         ? `<div class="mkt-empty"><span class="mkt-empty-icon">📝</span>생성된 콘텐츠가 없습니다</div>`
         : `<div style="display:flex;flex-direction:column;gap:8px">
-            ${recent.map(c => `
-              <div style="display:flex;align-items:flex-start;gap:12px;padding:12px;
-                border-radius:8px;border:1px solid #1e293b">
+            ${allContent.slice(0, 10).map(c => `
+              <div style="display:flex;align-items:flex-start;gap:12px;padding:12px;border-radius:8px;border:1px solid #1e293b">
                 <div style="flex:1;min-width:0">
-                  <div style="font-size:13px;color:#e2e8f0;font-weight:500;margin-bottom:6px">
-                    ${escHtml(c.topic || '주제 없음')}
-                  </div>
+                  <div style="font-size:13px;color:#e2e8f0;font-weight:500;margin-bottom:6px">${escHtml(c.topic || '주제 없음')}</div>
                   <div style="display:flex;gap:6px;flex-wrap:wrap">
                     ${(c.channels || []).map(ch => {
                       const info = CHANNELS.find(x => x.id === ch);
-                      return `<span class="mkt-badge mkt-badge-purple">
-                        ${info ? info.icon + ' ' + info.label : escHtml(ch)}
-                      </span>`;
+                      return `<span class="mkt-badge mkt-badge-purple">${info ? info.icon + ' ' + info.label : escHtml(ch)}</span>`;
                     }).join('')}
                   </div>
                 </div>
-                <div style="font-size:11px;color:#475569;white-space:nowrap">
-                  ${c.createdAt.slice(0, 10)}
-                </div>
-                <button class="mkt-btn mkt-btn-ghost"
-                  data-del-content="${c.id}">✕</button>
+                <div style="font-size:11px;color:#475569;white-space:nowrap">${c.createdAt.slice(0, 10)}</div>
+                <button class="mkt-btn mkt-btn-ghost" data-del-content="${c.id}">✕</button>
               </div>
             `).join('')}
           </div>`
@@ -349,6 +478,10 @@ function _bindEvents() {
       btn.classList.add('active');
       document.getElementById(`mkt-${btn.dataset.tab}`).classList.add('active');
       _state.activeTab = btn.dataset.tab;
+      if (btn.dataset.tab === 'insight' && !_state.briefingDone) {
+        _state.briefingDone = true;
+        setTimeout(_handleInsightAi, 200);
+      }
     });
   });
 
@@ -367,8 +500,9 @@ function _bindEvents() {
   // Generate button
   document.getElementById('mkt-generate').addEventListener('click', _handleGenerate);
 
-  // Place form
-  document.getElementById('mkt-place-form').addEventListener('submit', e => {
+  // Place form (event delegation — re-rendered after add)
+  document.getElementById('mkt-place').addEventListener('submit', e => {
+    if (e.target.id !== 'mkt-place-form') return;
     e.preventDefault();
     const keyword = document.getElementById('mkt-pk').value.trim();
     const rank    = parseInt(document.getElementById('mkt-pr').value);
@@ -380,12 +514,31 @@ function _bindEvents() {
     _rerenderPanel('place');
   });
 
-  // Place delete (event delegation)
+  // Place click delegation (delete rank + AI tool tabs + generate + copy)
   document.getElementById('mkt-place').addEventListener('click', e => {
-    const id = e.target.closest('[data-del-rank]')?.dataset.delRank;
-    if (id && confirm('순위 기록을 삭제할까요?')) {
-      DB.mktPlaceRanksDel(id);
+    const delId = e.target.closest('[data-del-rank]')?.dataset.delRank;
+    if (delId && confirm('순위 기록을 삭제할까요?')) {
+      DB.mktPlaceRanksDel(delId);
       _rerenderPanel('place');
+      return;
+    }
+    // AI tool tab switching
+    const toolBtn = e.target.closest('.place-tool-btn');
+    if (toolBtn) {
+      document.querySelectorAll('.place-tool-btn').forEach(b => b.className = 'mkt-btn mkt-btn-outline place-tool-btn');
+      toolBtn.className = 'mkt-btn mkt-btn-primary place-tool-btn';
+      document.querySelectorAll('.place-tool-section').forEach(s => s.style.display = 'none');
+      document.getElementById(`place-tool-${toolBtn.dataset.tool}`).style.display = '';
+      return;
+    }
+    // Generate buttons
+    if (e.target.id === 'place-news-gen')   { _handlePlaceAi('news',   document.getElementById('place-news-input').value);   return; }
+    if (e.target.id === 'place-review-gen') { _handlePlaceAi('review', document.getElementById('place-review-input').value); return; }
+    if (e.target.id === 'place-thumb-gen')  { _handlePlaceAi('thumb',  document.getElementById('place-thumb-input').value);  return; }
+    // Copy
+    if (e.target.id === 'place-ai-copy') {
+      navigator.clipboard.writeText(document.getElementById('place-ai-text').textContent || '')
+        .then(() => showToast('✅ 복사됨')).catch(() => showToast('❌ 복사 실패'));
     }
   });
 
@@ -413,13 +566,17 @@ function _bindEvents() {
     _rerenderPanel('cost');
   });
 
-  // Insight delete (event delegation)
+  // Insight click delegation (delete content + AI generate + renewal SMS)
   document.getElementById('mkt-insight').addEventListener('click', e => {
-    const id = e.target.closest('[data-del-content]')?.dataset.delContent;
-    if (id && confirm('콘텐츠 기록을 삭제할까요?')) {
-      DB.mktContentDel(id);
+    const delId = e.target.closest('[data-del-content]')?.dataset.delContent;
+    if (delId && confirm('콘텐츠 기록을 삭제할까요?')) {
+      DB.mktContentDel(delId);
       _rerenderPanel('insight');
+      return;
     }
+    if (e.target.id === 'insight-ai-gen') { _handleInsightAi(); return; }
+    const smsBtn = e.target.closest('.renewal-sms-btn');
+    if (smsBtn) _handleRenewalSms(smsBtn.dataset.member, smsBtn.dataset.date);
   });
 
   // Marketing AI send
@@ -631,12 +788,11 @@ function _runSensor(channelId, text) {
 
   // 1. 금지 단어
   const found = SENSOR_FORBIDDEN.filter(w => text.includes(w));
-  const dietAlone = /다이어트(?!\s*가\s*아닌)/.test(text);
-  const forbidOk  = found.length === 0 && !dietAlone;
+  const forbidOk  = found.length === 0;
   results.push({
     label: '금지 단어',
     ok:    forbidOk,
-    detail: forbidOk ? '없음' : `발견: ${[...found, dietAlone ? '다이어트(단독)' : ''].filter(Boolean).join(', ')}`,
+    detail: forbidOk ? '없음' : `발견: ${found.join(', ')}`,
   });
 
   // 2. 브랜드 키워드
@@ -734,4 +890,118 @@ function _renderDraftOutput(channels) {
       .then(() => showToast('✅ 클립보드에 복사됨'))
       .catch(() => showToast('❌ 복사 실패'));
   });
+}
+
+/* ── Place AI tools ──────────────────────────────────── */
+
+async function _handlePlaceAi(type, input) {
+  if (!input.trim()) { showToast('⚠️ 내용을 입력하세요'); return; }
+  const output = document.getElementById('place-ai-output');
+  const textEl = document.getElementById('place-ai-text');
+  output.style.display = 'block';
+  textEl.textContent = '생성 중...';
+
+  const sys = {
+    news:   `핏플랜PT 네이버 플레이스 소식 문구 전문가야. 200자 이내, 방문 유도 CTA 필수. 브랜드 톤: 전문적·신뢰감·프리미엄. 스튜디오: 서울 강남구 압구정 로데오 2층 30평대 프라이빗 PT. 차별화: exbody 체형분석·1:1 프라이빗·발렛파킹. 금지: 저렴한/할인/이벤트가격/살빼기.`,
+    review: `핏플랜PT 리뷰 답글 전문가야. 진심 어린 감사 + 브랜드 포지셔닝 자연스럽게. 100~150자 내외. 브랜드 톤: 전문적·따뜻한 신뢰감. 과도한 광고 문구 금지.`,
+    thumb:  `핏플랜PT 네이버 플레이스 썸네일 멘트 전문가야. 이미지 컨텍스트를 받아 3가지 옵션 제공. 각 20자 내외. 감성적이고 프리미엄한 톤. 금지: 저렴한/할인/이벤트.`,
+  };
+  const prompt = {
+    news:   `소식 주제: ${input}\n\n네이버 플레이스 소식 문구를 작성해줘. 200자 이내, CTA 포함.`,
+    review: `다음 리뷰에 대한 답글 초안을 작성해줘:\n\n${input}`,
+    thumb:  `이미지 컨텍스트: ${input}\n\n썸네일 멘트 3가지 옵션을 제안해줘. 각 20자 내외.`,
+  };
+
+  try {
+    const text = await callClaude({ system: sys[type], messages: [{ role: 'user', content: prompt[type] }] });
+    textEl.textContent = text;
+  } catch (err) {
+    textEl.textContent = '❌ 생성 실패 — API 키 또는 네트워크 확인';
+    console.error(err);
+  }
+}
+
+/* ── Insight AI & Renewal SMS ────────────────────────── */
+
+async function _handleInsightAi() {
+  const output = document.getElementById('insight-ai-output');
+  if (!output) return;
+  output.innerHTML = `<div style="text-align:center;padding:32px;color:#64748b">
+    <span class="mkt-spinner" style="width:24px;height:24px;border-width:3px"></span>
+    <div style="margin-top:12px;font-size:13px">데이터 분석 중...</div>
+  </div>`;
+
+  try {
+    const text = await callClaude({
+      system:   _buildInsightSystemPrompt(),
+      messages: [{ role: 'user', content: '이번 달 마케팅·매출·운영 현황을 종합 분석하고 실행 가능한 인사이트를 제공해줘.' }],
+    });
+    output.innerHTML = `<div style="padding:4px;color:#cbd5e1;font-size:13px;line-height:1.8">${escHtml(text).replace(/\n/g, '<br>')}</div>`;
+  } catch (err) {
+    output.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:12px">❌ 분석 실패 — API 키 또는 네트워크 확인</div>`;
+    console.error(err);
+  }
+}
+
+async function _handleRenewalSms(memberName, lastDate) {
+  const outputDiv = document.getElementById('renewal-sms-output');
+  const textEl    = document.getElementById('renewal-sms-text');
+  if (!outputDiv || !textEl) return;
+  outputDiv.style.display = 'block';
+  textEl.textContent = '문자 초안 생성 중...';
+  const days = Math.floor((new Date() - new Date(lastDate)) / 86400000);
+
+  try {
+    const text = await callClaude({
+      system:   `핏플랜PT 팔로업 문자 메시지 전문가야. 짧고 자연스럽고 부담 없는 톤. 80자 내외. 브랜드: 압구정 로데오 프라이빗 PT. 금지: 할인/이벤트/저렴한/광고 느낌.`,
+      messages: [{ role: 'user', content: `${memberName}님, 마지막 등록 ${days}일 경과. 재등록 유도 문자 초안 3가지 옵션 작성.` }],
+    });
+    textEl.textContent = text;
+  } catch (err) {
+    textEl.textContent = '❌ 생성 실패';
+    console.error(err);
+  }
+}
+
+function _buildInsightSystemPrompt() {
+  const now      = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  const salesByMonth = [];
+  for (let i = 2; i >= 0; i--) {
+    const d  = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const s  = DB.salesLogsGetByMonth(mk);
+    const rev = s.reduce((sum, x) => sum + (x.amount || 0), 0);
+    salesByMonth.push(`  ${mk}: 총 ${rev.toLocaleString()}원 (신규 ${s.filter(x=>x.type==='new').length}건, 재등록 ${s.filter(x=>x.type==='renewal').length}건)`);
+  }
+
+  const costs    = DB.mktCostsGet(thisMonth);
+  const totalCost = costs.reduce((s, c) => s + (c.amount || 0), 0);
+  const byCh = {};
+  costs.forEach(c => { byCh[c.channel] = (byCh[c.channel] || 0) + (c.amount || 0); });
+
+  const ranks    = DB.mktPlaceRanksGet().slice(0, 10);
+  const consults = DB.consultsGet().filter(c => (c.createdAt || '').startsWith(thisMonth));
+  const calls    = DB.callLogsGet(thisMonth);
+  const renewals = _detectRenewal();
+
+  return `너는 핏플랜PT 전담 운영·마케팅 인사이트 분석가야.
+
+[스튜디오] 압구정 로데오 2층 30평대 프라이빗 PT. 타겟: 30~60대 여성. 차별화: exbody·1:1 프라이빗·발렛파킹.
+
+[최근 3개월 매출]
+${salesByMonth.join('\n')}
+
+[이번 달(${thisMonth}) 마케팅 비용] 총 ${totalCost.toLocaleString()}원
+${Object.entries(byCh).map(([ch, amt]) => `  ${ch}: ${amt.toLocaleString()}원`).join('\n') || '  없음'}
+
+[플레이스 최근 순위]
+${ranks.length ? ranks.map(r => `  ${r.date} "${r.keyword}" ${r.rank}위`).join('\n') : '  기록 없음'}
+
+[이번 달 상담·전화] 신규 상담: ${consults.length}건 / 전화 일지: ${calls.length}건
+
+[재등록 임박] ${renewals.length ? renewals.map(r => `${r.memberName}(${Math.floor((now - new Date(r.date)) / 86400000)}일)`).join(', ') : '없음'}
+
+[응답 형식] 마크다운 없이 한국어로. 섹션: 💰 매출 분석 / 📣 마케팅 효과 / 🎯 이번 달 액션 아이템(3개) / ⚠️ 주의 사항. 간결하고 실용적으로.`;
 }
