@@ -5,8 +5,10 @@ import { callClaude, callClaudeVision, fileToBase64 } from '../api.js';
 const CHANNELS = [
   { id: 'blog',      label: '네이버 블로그', icon: '📝' },
   { id: 'instagram', label: '인스타그램',     icon: '📸' },
+  { id: 'reels',     label: '인스타 릴스',    icon: '🎬' },
   { id: 'karrot',    label: '당근마켓',       icon: '🥕' },
   { id: 'place',     label: '플레이스 소식',  icon: '📍' },
+  { id: 'google',    label: '구글 비즈니스',  icon: '🗺️' },
 ];
 
 const COST_CHANNELS = ['네이버 블로그', '인스타그램', '당근마켓', '플레이스', '기타'];
@@ -15,7 +17,7 @@ const COST_CHANNELS = ['네이버 블로그', '인스타그램', '당근마켓',
 const SENSOR_FORBIDDEN = ['살빼기', '땀빼기', '저렴한', '할인', '이벤트가격'];
 const SENSOR_BRAND_KW  = ['핏플랜', '압구정PT', '압구정 PT', '체형교정', '프라이빗', 'exbody', 'EXBODY'];
 const SENSOR_SEO_KW    = ['압구정PT', '압구정 PT', '강남퍼스널트레이닝', '강남 퍼스널트레이닝', '체형교정'];
-const SENSOR_LENGTH    = { blog: { min: 2500, max: 3000, label: '2500~3000자' }, instagram: { max: 300, label: '300자 이내' }, karrot: { max: 300, label: '300자 이내' }, place: { max: 200, label: '200자 이내' } };
+const SENSOR_LENGTH    = { blog: { min: 2500, max: 3000, label: '2500~3000자' }, instagram: { max: 300, label: '300자 이내' }, reels: { max: 150, label: '150자 이내' }, karrot: { max: 300, label: '300자 이내' }, place: { max: 200, label: '200자 이내' }, google: { max: 300, label: '300자 이내' } };
 
 let _state = {};
 
@@ -67,9 +69,19 @@ function _writePanel() {
         <div class="mkt-card-title">콘텐츠 설정</div>
 
         <label class="mkt-label">주제 / 메시지</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          <button class="mkt-btn mkt-btn-ghost mkt-preset" style="font-size:11px;padding:4px 10px"
+            data-preset="exbody 체형분석 전후 변화 사례 — 체성분·자세 개선 스토리">📊 체형 사례</button>
+          <button class="mkt-btn mkt-btn-ghost mkt-preset" style="font-size:11px;padding:4px 10px"
+            data-preset="압구정 프라이빗 PT 스튜디오 시설 소개 — 30평대 프리미엄 공간·exbody·발렛파킹">🏢 시설 소개</button>
+          <button class="mkt-btn mkt-btn-ghost mkt-preset" style="font-size:11px;padding:4px 10px"
+            data-preset="1:1 퍼스널트레이닝 효과 — 자세교정·체성분 개선·운동 습관 만들기">💪 PT 효과</button>
+          <button class="mkt-btn mkt-btn-ghost mkt-preset" style="font-size:11px;padding:4px 10px"
+            data-preset="신규 회원 체험 세션 안내 — 첫 방문 exbody 분석 + 무료 체험 PT">🎯 신규 모집</button>
+        </div>
         <textarea id="mkt-topic" class="mkt-textarea"
           placeholder="예: exbody 체형분석 후 PT 효과 변화, 압구정 프라이빗 스튜디오 소개..."
-          rows="5"></textarea>
+          rows="4"></textarea>
 
         <label class="mkt-label" style="margin-top:16px">채널 선택</label>
         <div class="mkt-channel-pills">
@@ -262,7 +274,7 @@ function _detectRenewal() {
   for(let i=0;i<8;i++){const d=new Date(now.getFullYear(),now.getMonth()-i,1);const mk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;allSales.push(...DB.salesLogsGetByMonth(mk));}
   const byMember={};
   allSales.forEach(s=>{if(!s.memberName||!s.date)return;if(!byMember[s.memberName]||s.date>byMember[s.memberName].date)byMember[s.memberName]=s;});
-  return Object.values(byMember).filter(s=>{const diff=(now-new Date(s.date))/86400000;return diff>=60&&diff<=150;}).sort((a,b)=>a.date.localeCompare(b.date));
+  return Object.values(byMember).filter(s=>{const diff=(now-new Date(s.date))/86400000;return diff>=75&&diff<=110;}).sort((a,b)=>a.date.localeCompare(b.date));
 }
 
 function _renewalHtml(candidates) {
@@ -380,7 +392,7 @@ function _insightPanel() {
       <div class="mkt-kpi-card">
         <div class="mkt-kpi-label">재등록 임박</div>
         <div class="mkt-kpi-value">${renewals.length}명</div>
-        <div class="mkt-kpi-sub">60~150일 경과</div>
+        <div class="mkt-kpi-sub">75~110일 경과</div>
       </div>
     </div>
 
@@ -495,6 +507,12 @@ function _bindEvents() {
     _state.uploadedFile = file;
     document.getElementById('mkt-upload-zone').classList.add('has-file');
     document.getElementById('mkt-upload-label').textContent = `✅ ${file.name}`;
+  });
+
+  // Preset topic buttons
+  document.getElementById('mkt-write').addEventListener('click', e => {
+    const preset = e.target.closest('.mkt-preset');
+    if (preset) document.getElementById('mkt-topic').value = preset.dataset.preset;
   });
 
   // Generate button
@@ -639,16 +657,17 @@ async function _handleGenerate() {
 [필수 규칙]
 - 금지: 살빼기/땀빼기 → 체형교정/체성분 개선으로 대체
 - 금지: 저렴한/싼/할인/이벤트가격 → 언급 자체 금지
-- "다이어트" 단독 사용 금지 → "다이어트가 아닌 체형교정"으로 재프레이밍
 - 경쟁사 이름 직접 언급 절대 금지
 - 브랜드 톤: 전문적·신뢰감·프리미엄. 저렴한 느낌 절대 금지
 - 모든 콘텐츠에 차별화 포인트 최소 1개 이상 포함
 
 [채널별 규칙]
-- 네이버 블로그(blog): 2500~3000자, 구조: 도입부(문제제기) → 본문(H2/H3 소제목) → 마무리(CTA), SEO 키워드 3회 이상(압구정PT·강남퍼스널트레이닝·체형교정)
-- 인스타그램(instagram): 300자 내외, 감성적·애스피레이셔널, 해시태그 8~12개 (고정 5: #압구정PT #강남퍼스널트레이닝 #핏플랜PT #체형교정 #프라이빗PT)
-- 당근마켓(karrot): 300자 이내, 신뢰감 있는 전문가 톤, 가격 직접 언급 금지
+- 네이버 블로그(blog): 2500~3000자, 구조: 도입부(문제제기) → 본문(H2/H3 소제목) → 마무리(CTA), SEO 키워드 3회 이상(압구정PT·강남퍼스널트레이닝·체형교정), 내부링크 삽입 위치를 [INTERNAL_LINK: "관련 글 제목"] 형식으로 표시
+- 인스타그램(instagram): 300자 내외, 감성적·애스피레이셔널, 저장 유도 문구 포함, 해시태그 8~12개 (고정 5: #압구정PT #강남퍼스널트레이닝 #핏플랜PT #체형교정 #프라이빗PT)
+- 인스타 릴스(reels): 훅 문장(첫 1초, 10자 내외로 강렬하게) + 본문 3~5단계 스토리 구성 + CTA. 자막용 텍스트 형식. 캡션 150자 이내. 해시태그 8~12개.
+- 당근마켓(karrot): 300자 이내, 신뢰감 있는 전문가 톤, 가격 직접 언급 금지, 무료 체험 세션·상담 예약 CTA 허용
 - 플레이스 소식(place): 200자 이내, 방문 유도 CTA 필수 ("예약 문의는 ▶" 등)
+- 구글 비즈니스(google): 300자 이내, 한국어 위주 + 영문 키워드 병기 가능, 외국인 고객 고려. 방문 유도 CTA 필수.
 
 요청된 채널만 생성하고, 각 채널을 반드시 아래 형식으로 구분하세요:
 === 채널명 ===
