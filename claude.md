@@ -1,134 +1,111 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+---
+
+## 행동 규칙 (필수 준수)
+
+- 파일 삭제 · 구조 변경 · DB 수정 등 되돌리기 어려운 작업 전 반드시 확인
+- 복잡한 작업은 단계 나누어 제안 후 승인받고 진행
+- 한 번에 너무 많이 바꾸지 말 것 — 나눠서, 단계별로 테스트 후 진행
+- **Git push는 명시적으로 요청받기 전까지 하지 말 것** (커밋만 하고 대기)
+
+**자율 진행 ("자율로 해줘") 시**
+- 해당 작업 범위 내 완전 자율 — 중간에 권한 묻지 말 것, 선택지 제시 금지
+- 완료 후 결과만 보고
 
 ---
 
-## 스튜디오 정보 (브랜드 컨텍스트)
+## 메모리 · 컨텍스트 관리
 
-| 항목 | 내용 |
-|------|------|
-| 이름 | 핏플랜PT |
-| 위치 | 서울 강남구 압구정 로데오 2층, 30평대 프라이빗 PT 스튜디오 |
-| 타겟 | 30대 여성, 인근 중장년 여성 (40~60대) |
-| 브랜드 키워드 | **Private · Expert · Serene** |
-| 차별화 포인트 | exbody 정밀 체형분석, 1:1 프라이빗, 발렛파킹, 샤워시설, 전문 강사진 |
-
-### 콘텐츠 규칙
-
-**필수 포함 요소** (콘텐츠 3개 중 최소 1개 이상)
-- exbody 정밀 체형분석
-- 1:1 프라이빗
-- 발렛파킹
-- 샤워시설
-- 전문 강사진
-
-**절대 사용 금지 단어**
-- 살빼기, 땀빼기, 저렴한, 싼, 할인, 이벤트가격
-- "다이어트" 단독 사용 금지 → "체형교정", "건강한 체형 관리", "다이어트가 아닌 체형교정" 으로 대체
-- 경쟁사 이름 직접 언급 금지
-
-**브랜드 톤** : 전문적 · 신뢰감 · 프리미엄. 친근하되 저렴한 느낌 절대 금지.
+- **메모리는 이 파일(CLAUDE.md)만 사용** — `~/.claude/memory` 또는 로컬 파일 저장 절대 금지
+- 모든 컨텍스트는 CLAUDE.md → GitHub commit으로만 관리
+- 작업환경: **Windows 11 + MacBook 번갈아 사용** — 경로는 항상 상대경로 또는 프로젝트 루트 기준으로 표기
 
 ---
 
-## 채널별 톤앤매너 & 포맷 규칙
+## ⚠️ 미완료 작업 목록
 
-### 네이버 블로그
-- **분량**: 2500~3000자 + 이미지 5장 이상 권장
-- **톤**: 정보성, SEO 최적화, 전문적
-- **구조**: 도입부(문제 제기) → 본문(소제목 H2/H3) → 마무리(CTA)
-- **SEO**: 핵심 키워드 자연스럽게 3회 이상 삽입 (압구정PT, 강남퍼스널트레이닝, 체형교정 등)
-- **금지**: 과도한 줄바꿈, 의미없는 반복, 저품질 패턴
-
-### 네이버 플레이스 소식
-- **분량**: 200자 이내
-- **톤**: 짧고 임팩트, 방문 유도
-- **필수**: CTA 포함 ("예약 문의는 ▶", "지금 바로 ▶")
-- **업로드 주기**: 주 2~3회 이상 (플레이스 순위 유지 핵심)
-
-### 인스타그램
-- **캡션**: 감성적, 300자 내외, 저장 유도 문구 포함
-- **해시태그**: 8~12개 (고정 5개 + 콘텐츠별 3~7개)
-  - 고정: #압구정PT #강남퍼스널트레이닝 #핏플랜PT #체형교정 #프라이빗PT
-  - 콘텐츠별: 주제에 맞게 선택
-- **톤**: 라이프스타일 감성, 애스피레이셔널(aspirational)
-
-### 당근마켓
-- **분량**: 300자 이내
-- **톤**: 신뢰감 있는 전문가 톤 + 간결함. 친근하되 저렴한 느낌 절대 금지
-- **금지**: 가격 직접 언급, 지나친 구어체
-- **핵심**: 프리미엄 시설 + 전문성 + 접근성(압구정 로데오 2층, 발렛파킹)
+### 구글 드라이브 마케팅 폴더
+- 내 드라이브 최상위에 `핏플랜PT_마케팅` 폴더 생성 (직접 만들기로 함)
+- 하위: `insta/` · `reviews/` · `competitor/` · `exbody/`
+- 목적: 윈도우·맥북 양쪽에서 마케팅 이미지·캡처 공유 → 나에게 분석 요청
+- 구글 드라이브 MCP 인증 완료 (세션마다 재인증 필요할 수 있음)
 
 ---
 
-## Project Overview
+## ⚠️ 미완료 — Netlify 환경변수 등록 필요
 
-Fitness studio management app — built with HTML5 / CSS3 / Vanilla JS using **ES Modules (ESM)**. No build tools. Firebase Realtime Database 연동 완료. Netlify 배포.
+Netlify 대시보드 → Site configuration → Environment variables:
 
-`index.html` is a minimal HTML shell only — **do not put JS or CSS logic back into it**.
+| 변수명 | 값 | 상태 |
+|--------|-----|------|
+| `ANTHROPIC_API_KEY` | Claude API 키 | **미등록** |
+| `NAVER_CLIENT_ID` | 네이버 Open API | 나중에 (DataLab 쓸 때) |
+| `NAVER_CLIENT_SECRET` | 네이버 Open API | 나중에 (DataLab 쓸 때) |
 
----
-
-## Running the App
-
-**Requires a local HTTP server** (ESM cannot load over `file://` due to CORS).
-
-```bash
-# 옵션 1: Netlify CLI (함수 로컬 테스트 포함)
-npx netlify dev
-
-# 옵션 2: Python 단순 서버 (함수 없이 UI만)
-python3 -m http.server 8080
-```
-
-VS Code Live Server extension도 가능 (함수 미포함).
+> `ANTHROPIC_API_KEY` 미등록 시 글쓰기 에이전트 동작 안 함.
 
 ---
 
-## File Structure
+## 프로젝트 개요
+
+핏플랜PT 스튜디오 통합 관리 웹앱.
+HTML5 / CSS3 / Vanilla JS (ES Modules). No build tools. Firebase Realtime Database + Netlify 배포.
+
+브랜드 컨텍스트 · 채널별 톤앤매너 → **[MARKETING.md](MARKETING.md)** 참조.
+
+---
+
+## 파일 구조
 
 ```
-index.html              ← HTML shell only (topbar, sidebar, #page-content, <script type="module">)
-style.css               ← All CSS (variables, layout, per-feature component styles)
-netlify.toml            ← Netlify 빌드/함수/리다이렉트 설정
-.env.example            ← 환경변수 템플릿 (실제 .env는 gitignore)
-netlify/
-  functions/
-    claude-proxy.js     ← Claude API 서버사이드 프록시 (ANTHROPIC_API_KEY)
-    naver-proxy.js      ← 네이버 DataLab API 프록시 (NAVER_CLIENT_ID/SECRET)
+index.html                   ← HTML shell only. JS/CSS 로직 넣지 말 것.
+style.css                    ← 전체 CSS (변수, 레이아웃, 컴포넌트)
+netlify.toml                 ← /api/* → /.netlify/functions/* 리다이렉트
+.env.example                 ← 환경변수 템플릿 (.env는 gitignore)
+netlify/functions/
+  claude-proxy.js            ← Claude API 프록시 (ANTHROPIC_API_KEY)
+  naver-proxy.js             ← 네이버 DataLab 프록시 (NAVER_CLIENT_ID/SECRET)
 js/
-  api.js                ← 프론트엔드 API 클라이언트 (callClaude, callNaverDataLab, fileToBase64)
-  db.js                 ← Data access layer (DB object) — Firebase + 로컬 캐시
-  utils.js              ← Shared utilities: showToast, escHtml, fmtMoney, isMobile, comingSoon
-  main.js               ← App entry point: router (navigate), sidebar toggle, export/import
+  api.js                     ← callClaude / callClaudeVision / callNaverDataLab / fileToBase64
+  db.js                      ← DB 객체 — 유일한 읽기/쓰기 인터페이스
+  utils.js                   ← showToast, escHtml, fmtMoney, isMobile, comingSoon
+  main.js                    ← 라우터(navigate), 사이드바, export/import
   pages/
-    dashboard.js        ← Dashboard page
-    scheduler.js        ← Weekly scheduler (drag, dblclick, custom types)
-    todo.js             ← To-do list
-    finance.js          ← Settlement system (SettlementManager + render)
-    consult.js          ← Consult manager
-    calllog.js          ← 전화 일지
-    otlog.js            ← OT 일지
-    stats.js            ← 통계
-    salesLog.js         ← 매출일지
-    notice.js           ← 공지사항
-    marketing.js        ← [예정] 마케팅 총괄 에이전트
+    dashboard.js / scheduler.js / todo.js / finance.js
+    consult.js / calllog.js / otlog.js / stats.js
+    salesLog.js / notice.js
+    marketing.js             ← 마케팅 에이전트 (글쓰기·플레이스·비용·인사이트)
 ```
 
 ---
 
-## Architecture
+## 아키텍처
 
-Three logical layers:
+1. **`db.js`** — Firebase + 로컬 캐시(`_d`). 외부에서 `_d` 직접 접근 금지.
+2. **`pages/*.js`** — `render*()` → `#page-content` innerHTML 세팅 → `bind*Events()` 호출.
+3. **`main.js`** — `navigate(page)` 라우터. `window.navigate` 전역 노출.
+4. **`api.js`** — Netlify Functions 경유 Claude/네이버 API 클라이언트. 키는 서버에만.
 
-1. **`js/db.js` — Data layer**: The sole read/write interface. All reads/writes go through `DB.*` methods. Firebase Realtime Database + 로컬 캐시(`_d`). Never access `DB._d` directly from outside `DB`.
+---
 
-2. **`js/pages/*.js` — Page modules**: Each file exports a `render*()` function that sets `#page-content` innerHTML then calls its own `bind*Events()`. Module-level variables hold page state.
+## DB 네임스페이스
 
-3. **`js/main.js` — Router & shell**: Imports all page modules, owns the `navigate(page)` function. Exposes `window.navigate` for inline `onclick` handlers.
+| 네임스페이스 | 주요 메서드 |
+|---|---|
+| Scheduler | `schedGet` · `schedSet` |
+| CustomTypes | `typesGet` · `typesAdd` · `typesDel` |
+| Todos | `todosGet` · `todosAdd` · `todosUpdate` · `todosDel` |
+| Finance | `financeGet` · `financeSet` · `financeAddIncome` 등 |
+| SalesLog | `salesLogsGetByMonth` · `salesLogsAdd` · `salesLogsUpdate` · `salesLogsDel` |
+| Consults | `consultsGet` · `consultsGetOne` · `consultsAdd` · `consultsUpdate` · `consultsDel` |
+| CallLogs | `callLogsGet` · `callLogsAdd` · `callLogsDelete` |
+| OtLogs | `otLogsGet` · `otLogsAdd` · `otLogsUpdate` · `otLogsDel` |
+| Notice | `noticeGet` · `noticeSet` |
+| **Marketing** | `mktCostsGet` · `mktCostsAdd` · `mktCostsDel` · `mktPlaceRanksGet` · `mktPlaceRanksAdd` · `mktContentAdd` · `mktContentGetRecent` |
+| I/O | `exportAll` · `importAll` |
 
-4. **`js/api.js` — API client**: `callClaude()` / `callClaudeVision()` / `callNaverDataLab()` — 모두 Netlify Functions 프록시 경유. API 키는 서버에만 보관.
+Firebase 경로: `/marketing/{costs·placeRanks·content}/{id}`
 
 ---
 
@@ -137,63 +114,37 @@ Three logical layers:
 ```js
 import { callClaude, callClaudeVision, callNaverDataLab, fileToBase64 } from '../api.js';
 
-// 텍스트 생성
-const text = await callClaude({
-  system: '시스템 프롬프트',
-  messages: [{ role: 'user', content: '질문' }],
-});
+const text = await callClaude({ system: '...', messages: [{ role: 'user', content: '...' }] });
 
-// 이미지 분석
 const { base64, mediaType } = await fileToBase64(file);
-const analysis = await callClaudeVision(base64, mediaType, '이 사진을 분석해줘', systemPrompt);
-
-// 네이버 DataLab 검색 트렌드
-const trend = await callNaverDataLab([
-  { groupName: '압구정PT', keywords: ['압구정PT', '압구정 퍼스널트레이닝'] },
-]);
+const result = await callClaudeVision(base64, mediaType, '분석해줘', systemPrompt);
 ```
 
 ---
 
-## Data Layer (DB object)
+## 새 페이지 추가 방법
 
-| Namespace | Methods |
-|---|---|
-| Scheduler | `DB.schedGet(instId, wKey, day, hour)` · `DB.schedSet(…, patch)` |
-| Custom Types | `DB.typesGet()` · `DB.typesAdd(type)` · `DB.typesDel(idx)` |
-| Todos | `DB.todosGet()` · `DB.todosAdd()` · `DB.todosUpdate(id, patch)` · `DB.todosDel(id)` |
-| Finance | `DB.financeGet(monthKey)` · `DB.financeSet(monthKey, data)` |
-| Consults | `DB.consultsGet()` · `DB.consultsGetOne(id)` · `DB.consultsAdd()` · `DB.consultsUpdate(id, patch)` |
-| Marketing | `DB.marketingGet(key)` · `DB.marketingSet(key, data)` ← [예정] |
-| I/O | `DB.exportAll()` · `DB.importAll(data)` |
-
-Firebase 경로: `/marketing/{key}` (마케팅 데이터)
+1. `js/pages/foo.js` — `export function renderFoo()` 작성
+2. `js/main.js` — import 추가, `pages` 맵에 `foo: renderFoo` 등록
+3. `index.html` — 사이드바에 `<button class="nav-item" data-page="foo">` 추가
 
 ---
 
-## Netlify Functions 환경변수
+## 마케팅 에이전트 구현 단계
 
-Netlify 대시보드 → Site configuration → Environment variables 에 등록:
+| 단계 | 내용 | 상태 |
+|------|------|------|
+| 0단계 | Netlify Functions 셋업 (claude-proxy, naver-proxy, netlify.toml) | ✅ 완료 |
+| 1단계 | CLAUDE.md 브랜드 컨텍스트 + db.js 마케팅 네임스페이스 | ✅ 완료 |
+| 2단계 | 마케팅 탭 UI (글쓰기·플레이스·비용·인사이트) 다크 네이비 테마 | ✅ 완료 |
+| 3단계 | 글쓰기 에이전트 — 4채널 초안·Vision·**Sensor 자동 검증 UI** | ✅ 완료 |
+| 4단계 | 플레이스 에이전트 — 추이 그래프·소식 문구·리뷰 답글·썸네일 멘트 | ✅ 완료 |
+| 5단계 | 비용관리·인사이트 — 추이 그래프·AI 인사이트·재등록 감지·일일 브리핑 | ✅ 완료 |
 
-| 변수명 | 용도 |
-|--------|------|
-| `ANTHROPIC_API_KEY` | Claude API 인증 |
-| `NAVER_CLIENT_ID` | 네이버 Open API Client ID |
-| `NAVER_CLIENT_SECRET` | 네이버 Open API Client Secret |
-
-로컬 개발 시 `.env` 파일 생성 후 `npx netlify dev` 실행.
-
----
-
-## Adding a New Page
-
-1. Create `js/pages/foo.js` — export `renderFoo()` which sets `#page-content` innerHTML then calls `bindFooEvents()`.
-2. In `js/main.js`: `import { renderFoo } from './pages/foo.js';` and add `foo: renderFoo` to the `pages` map.
-3. In `index.html`: add `<button class="nav-item" data-page="foo">` in the sidebar `<nav>`.
+> 단계 완료 시 상태를 ✅ 완료로 업데이트할 것.
 
 ---
 
-## Scheduler Drag/DblClick Conflict Rule
+## 스케줄러 drag/dblclick 규칙
 
-- `mousedown` sets `isDragging = true`; `document.mouseup` (registered **once** at module init) sets it `false`.
-- Never add another `document.mouseup` listener.
+`document.mouseup` 리스너는 `scheduler.js` 모듈 init에 **딱 한 번**만 등록. 절대 중복 추가 금지.

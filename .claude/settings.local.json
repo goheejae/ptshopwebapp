@@ -6,7 +6,16 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git commit *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(mkdir -p \"c:\\\\claude\\\\ptshopwebapp\\\\netlify\\\\functions\")",
+      "mcp__claude_ai_Google_Drive__list_recent_files",
+      "Bash(git -C \"c:\\\\claude\\\\ptshopwebapp\" status)",
+      "Bash(git -C \"c:\\\\claude\\\\ptshopwebapp\" diff)",
+      "Bash(git -C \"c:\\\\claude\\\\ptshopwebapp\" log --oneline -3)"
+    ],
+    "additionalDirectories": [
+      "c:\\claude\\ptshopwebapp\\netlify"
     ]
   }
 }
