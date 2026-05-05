@@ -62,6 +62,7 @@ const DB = {
         otLogs:      toArray(raw.otLogs   ? Object.values(raw.otLogs)   : []),
         notice:      raw.notice || '',
         instructors: raw.instructors || {},
+        marketing:   raw.marketing   || { costs: {}, placeRanks: {}, content: {} },
       };
     } catch (e) {
       console.warn('Firebase 연결 실패 — 빈 데이터로 시작합니다.', e);
@@ -82,6 +83,7 @@ const DB = {
     otLogs:      [],
     notice:      '',
     instructors: {},
+    marketing:   { costs: {}, placeRanks: {}, content: {} },
   }),
 
   /** Firebase 비동기 쓰기 (실패 시 토스트 알림) */
@@ -406,6 +408,77 @@ const DB = {
       console.error('Firebase 쓰기 오류: notice', e);
       showToast('⚠️ 저장 실패 — 인터넷 연결을 확인해주세요.');
     });
+  },
+
+  /* ════════════════════════════════════════════════════════
+     MARKETING
+     경로: marketing/{costs|placeRanks|content}/{id}
+  ════════════════════════════════════════════════════════ */
+
+  _mkt() {
+    if (!this._d.marketing) this._d.marketing = { costs: {}, placeRanks: {}, content: {} };
+    return this._d.marketing;
+  },
+
+  // 채널별 마케팅 비용 ─────────────────────────────────
+  // { id, monthKey:'YYYY-MM', channel, amount, memo, createdAt }
+  mktCostsGet(monthKey) {
+    return Object.values(this._mkt().costs || {})
+      .filter(e => e && e.monthKey === monthKey)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  },
+
+  mktCostsAdd(monthKey, fields) {
+    const item = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), monthKey, ...fields };
+    this._mkt().costs[item.id] = item;
+    this._fbSet(`marketing/costs/${item.id}`, item);
+    return item;
+  },
+
+  mktCostsDel(id) {
+    delete this._mkt().costs[id];
+    this._fbSet(`marketing/costs/${id}`, null);
+  },
+
+  // 네이버 플레이스 순위 기록 ──────────────────────────
+  // { id, date:'YYYY-MM-DD', keyword, rank, memo, createdAt }
+  mktPlaceRanksGet() {
+    return Object.values(this._mkt().placeRanks || {})
+      .filter(Boolean)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  },
+
+  mktPlaceRanksAdd(fields) {
+    const item = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...fields };
+    this._mkt().placeRanks[item.id] = item;
+    this._fbSet(`marketing/placeRanks/${item.id}`, item);
+    return item;
+  },
+
+  mktPlaceRanksDel(id) {
+    delete this._mkt().placeRanks[id];
+    this._fbSet(`marketing/placeRanks/${id}`, null);
+  },
+
+  // 콘텐츠 생성 이력 ───────────────────────────────────
+  // { id, topic, channels:[], drafts:{blog,place,insta,karrot}, createdAt }
+  mktContentAdd(fields) {
+    const item = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...fields };
+    this._mkt().content[item.id] = item;
+    this._fbSet(`marketing/content/${item.id}`, item);
+    return item;
+  },
+
+  mktContentGetRecent(limit = 20) {
+    return Object.values(this._mkt().content || {})
+      .filter(Boolean)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+  },
+
+  mktContentDel(id) {
+    delete this._mkt().content[id];
+    this._fbSet(`marketing/content/${id}`, null);
   },
 
   /* ════════════════════════════════════════════════════════
