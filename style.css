@@ -1609,16 +1609,45 @@ body.sidebar-collapsed #main { margin-left: 0; }
 .private-panel .cfield textarea { min-height: 80px; }
 }
 
+/* ── 상담지 도구바 ── */
+#con-toolbar {
+  position: sticky; top: 56px; z-index: 50;
+  background: #fff; border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+}
+
 /* ── 상담지 캔버스 래퍼 (휠/스와이프 스크롤 영역) ── */
 #canvas-wrapper {
   border: 2px solid #ddd;
   border-radius: 8px;
   background: #555;
+  height: calc(100vh - 130px);
+  overflow-y: auto; overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  line-height: 0;
 }
 #canvas-wrapper canvas {
   /* 기본: 손가락은 수직 스크롤, 펜은 그리기 (JS가 손가락 필기 ON 시 'none'으로 변경) */
   touch-action: pan-y;
   cursor: crosshair;
+}
+
+/* ── 상담지 모바일 뷰어 (읽기 전용) ── */
+.consult-viewer-wrap {
+  background: #555; padding: 8px;
+  min-height: calc(100vh - 130px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.consult-viewer-img {
+  display: block; width: 100%; height: auto;
+  background: #fff;
+  touch-action: pinch-zoom;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* ── 스케쥴러 미니 삭제 버튼 ── */
