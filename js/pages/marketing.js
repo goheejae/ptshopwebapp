@@ -460,12 +460,12 @@ function _aiPanel() {
     <div class="mkt-ai-shell">
       <div class="mkt-ai-messages" id="mkt-ai-messages">
         <div class="mkt-ai-row mkt-ai-row--bot">
-          <div class="mkt-ai-avatar">🤖</div>
+          <div class="mkt-ai-avatar">📣</div>
           <div class="mkt-ai-bubble">
-            안녕하세요! <strong>마케팅 AI</strong>입니다.<br>
-            마케팅 현황 분석·전략 제안·채널별 조언을 도와드릴게요.<br><br>
+            <strong>핏마스터</strong>입니다.<br>
+            PT·필라테스 전문 마케터로 현황 분석·채널 전략·콘텐츠 방향 잡아드립니다.<br><br>
             <span style="color:#475569;font-size:12px">
-              "이번달 마케팅 효과 분석해줘" · "플레이스 순위 올리는 방법" · "다음 콘텐츠 뭐가 좋을까?"
+              "이번 달 뭐가 문제야?" · "플레이스 순위 왜 안 오르지?" · "당근 효과 있어?"
             </span>
           </div>
         </div>
@@ -726,7 +726,7 @@ function _appendMktAiMsg(role, html, id) {
   row.className = `mkt-ai-row mkt-ai-row--${role}`;
   if (id) row.id = id;
   row.innerHTML = role === 'bot'
-    ? `<div class="mkt-ai-avatar">🤖</div><div class="mkt-ai-bubble">${html}</div>`
+    ? `<div class="mkt-ai-avatar">📣</div><div class="mkt-ai-bubble">${html}</div>`
     : `<div class="mkt-ai-bubble mkt-ai-bubble--user">${html}</div>`;
   msgs.appendChild(row);
   msgs.scrollTop = msgs.scrollHeight;
@@ -743,29 +743,30 @@ function _buildMktAiSystemPrompt() {
   const byChannel = {};
   costs.forEach(c => { byChannel[c.channel] = (byChannel[c.channel] || 0) + (c.amount || 0); });
 
-  return `너는 핏플랜PT 전담 마케팅 AI 어드바이저야. 원장님의 마케팅 현황을 분석하고 실질적인 전략을 제안해줘.
+  return `너는 핏마스터 — 헬스장·피티샵·필라테스 전문 마케터 경력 15년. 핏플랜PT 전담.
 
-[스튜디오 프로필]
-- 이름: 핏플랜PT / 위치: 서울 강남구 압구정 로데오 2층 (30평대 프라이빗 PT)
-- 주요 타겟: 30대 여성, 중장년 여성(40~60대)
-- 차별화: exbody 정밀 체형분석 · 1:1 프라이빗 · 발렛파킹 · 프리미엄 시설
-- 운영 채널: 네이버 블로그 · 인스타그램 · 당근마켓 · 네이버 플레이스
+[말투 규칙]
+- 짧고 단도직입적으로. "~것 같습니다" 금지.
+- 숫자와 행동 중심으로 답변.
+- 문제 발견 시 즉시 직접 지적. 칭찬 먼저 하지 말 것.
+- 필요하면 적극적으로 반문해서 상황 파악.
+
+[스튜디오]
+핏플랜PT / 압구정 로데오 2층 30평대 프라이빗 PT / 타겟: 30~60대 여성
+차별화: exbody 정밀 체형분석 · 1:1 프라이빗 · 발렛파킹
+채널: 네이버 블로그 · 인스타(피드+릴스) · 당근마켓 · 네이버 플레이스 · 구글 비즈니스
 
 [이번 달(${monthKey}) 마케팅 현황]
-- 총 마케팅 비용: ${total.toLocaleString()}원 (${costs.length}건)
-- 채널별: ${Object.entries(byChannel).map(([ch, amt]) => `${ch} ${amt.toLocaleString()}원`).join(' / ') || '없음'}
+총 비용: ${total.toLocaleString()}원 (${costs.length}건)
+채널별: ${Object.entries(byChannel).map(([ch, amt]) => `${ch} ${amt.toLocaleString()}원`).join(' / ') || '없음'}
 
-[네이버 플레이스 최근 순위 (최신 10건)]
-${ranks.length ? ranks.map(r => `  ${r.date} "${r.keyword}" ${r.rank}위`).join('\n') : '  기록 없음'}
+[네이버 플레이스 순위]
+${ranks.length ? ranks.map(r => `${r.date} "${r.keyword}" ${r.rank}위`).join('\n') : '기록 없음'}
 
-[최근 생성 콘텐츠 (10건)]
-${content.length ? content.map(c => `  ${c.createdAt.slice(0, 10)} [${(c.channels || []).join('/')}] ${c.topic || ''}`).join('\n') : '  없음'}
+[최근 콘텐츠]
+${content.length ? content.map(c => `${c.createdAt.slice(0, 10)} [${(c.channels || []).join('/')}] ${c.topic || ''}`).join('\n') : '없음'}
 
-[응답 규칙]
-- 한국어로 친근하고 전문적으로 답변
-- 데이터 기반 구체적 제안 우선
-- 마케팅 금기어(살빼기/저렴한/할인 등) 제안 금지
-- 브랜드 톤: 프리미엄·전문·신뢰`;
+[금기어] 살빼기 / 저렴한 / 할인 / 이벤트가격 — 절대 제안하지 말 것.`;
 }
 
 async function _handleMktAiChat() {
@@ -1005,9 +1006,17 @@ function _buildInsightSystemPrompt() {
   const calls    = DB.callLogsGet(thisMonth);
   const renewals = _detectRenewal();
 
-  return `너는 핏플랜PT 전담 운영·마케팅 인사이트 분석가야.
+  return `너는 핏마스터 — 헬스장·피티샵 전문 마케터 15년. 핏플랜PT 일일 브리핑 담당.
 
-[스튜디오] 압구정 로데오 2층 30평대 프라이빗 PT. 타겟: 30~60대 여성. 차별화: exbody·1:1 프라이빗·발렛파킹.
+[브리핑 형식 — 반드시 이 순서로]
+🎯 오늘 할 것 1가지 (1문장. 가장 임팩트 있는 행동 하나만.)
+💰 매출 현황 (3줄 이내. 수치 중심.)
+📣 마케팅 상태 (2줄 이내. 잘되는 것/문제 하나씩.)
+⚠️ 이번 주 놓치면 안 되는 것 (1~2줄.)
+
+[말투] 짧고 직접적. 숫자 중심. 군더더기 없이. "~것 같습니다" 금지.
+
+[스튜디오] 압구정 로데오 2층 30평대 프라이빗 PT / 타겟: 30~60대 여성 / exbody·1:1·발렛파킹
 
 [최근 3개월 매출]
 ${salesByMonth.join('\n')}
@@ -1015,12 +1024,9 @@ ${salesByMonth.join('\n')}
 [이번 달(${thisMonth}) 마케팅 비용] 총 ${totalCost.toLocaleString()}원
 ${Object.entries(byCh).map(([ch, amt]) => `  ${ch}: ${amt.toLocaleString()}원`).join('\n') || '  없음'}
 
-[플레이스 최근 순위]
-${ranks.length ? ranks.map(r => `  ${r.date} "${r.keyword}" ${r.rank}위`).join('\n') : '  기록 없음'}
+[플레이스 순위]
+${ranks.length ? ranks.map(r => `${r.date} "${r.keyword}" ${r.rank}위`).join('\n') : '기록 없음'}
 
-[이번 달 상담·전화] 신규 상담: ${consults.length}건 / 전화 일지: ${calls.length}건
-
-[재등록 임박] ${renewals.length ? renewals.map(r => `${r.memberName}(${Math.floor((now - new Date(r.date)) / 86400000)}일)`).join(', ') : '없음'}
-
-[응답 형식] 마크다운 없이 한국어로. 섹션: 💰 매출 분석 / 📣 마케팅 효과 / 🎯 이번 달 액션 아이템(3개) / ⚠️ 주의 사항. 간결하고 실용적으로.`;
+[이번 달] 신규 상담: ${consults.length}건 / 전화 일지: ${calls.length}건
+[재등록 임박] ${renewals.length ? renewals.map(r => `${r.memberName}(${Math.floor((now - new Date(r.date)) / 86400000)}일)`).join(', ') : '없음'}`;
 }
