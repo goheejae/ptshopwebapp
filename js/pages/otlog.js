@@ -23,6 +23,10 @@ export function renderOtLog() {
 
     <!-- 입력 폼 -->
     <div class="todo-input-section">
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:#555;margin-bottom:10px;cursor:pointer">
+        <input type="checkbox" id="ot-referral" ${editing?.isReferral ? 'checked' : ''}/>
+        지인소개 (통계 집계 제외)
+      </label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
         <div>
           <label style="font-size:0.78rem;color:#7a829e;display:block;margin-bottom:3px">날짜</label>
@@ -45,10 +49,6 @@ export function renderOtLog() {
             style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:7px 8px;font-size:0.88rem;font-family:inherit"/>
         </div>
       </div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:#555;margin-bottom:8px;cursor:pointer">
-        <input type="checkbox" id="ot-referral" ${editing?.isReferral ? 'checked' : ''}/>
-        지인소개 (통계 집계 제외)
-      </label>
       <div>
         <label style="font-size:0.78rem;color:#7a829e;display:block;margin-bottom:3px">특이사항</label>
         <textarea id="ot-note" placeholder="OT 내용, 특이사항, 주의사항 등 자유롭게 기록하세요"
@@ -79,6 +79,8 @@ export function renderOtLog() {
 
     <div style="padding:4px 0 2px;font-size:0.82rem;color:#888;text-align:right">
       총 상담 <strong style="color:#444">${logs.filter(l => !l.isReferral).length}명</strong>
+      · 고희재 <strong style="color:#444">${logs.filter(l => l.writer === '고희재' && !l.isReferral).length}명</strong>
+      · 이건우 <strong style="color:#444">${logs.filter(l => l.writer === '이건우' && !l.isReferral).length}명</strong>
       ${logs.some(l => l.isReferral) ? ` · 지인소개 ${logs.filter(l => l.isReferral).length}명 (통계 제외)` : ''}
     </div>
 
