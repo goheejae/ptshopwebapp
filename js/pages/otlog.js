@@ -45,6 +45,10 @@ export function renderOtLog() {
             style="width:100%;border:1px solid #d1d5db;border-radius:6px;padding:7px 8px;font-size:0.88rem;font-family:inherit"/>
         </div>
       </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:#555;margin-bottom:8px;cursor:pointer">
+        <input type="checkbox" id="ot-referral" ${editing?.isReferral ? 'checked' : ''}/>
+        지인소개 (통계 집계 제외)
+      </label>
       <div>
         <label style="font-size:0.78rem;color:#7a829e;display:block;margin-bottom:3px">특이사항</label>
         <textarea id="ot-note" placeholder="OT 내용, 특이사항, 주의사항 등 자유롭게 기록하세요"
@@ -74,7 +78,8 @@ export function renderOtLog() {
     </div>
 
     <div style="padding:4px 0 2px;font-size:0.82rem;color:#888;text-align:right">
-      총 ${logs.length}건
+      총 상담 <strong style="color:#444">${logs.filter(l => !l.isReferral).length}명</strong>
+      ${logs.some(l => l.isReferral) ? ` · 지인소개 ${logs.filter(l => l.isReferral).length}명 (통계 제외)` : ''}
     </div>
 
     <!-- 목록 -->
@@ -87,6 +92,7 @@ export function renderOtLog() {
               <div class="todo-top" style="flex-wrap:wrap;gap:4px">
                 <span class="ot-badge ${l.writer === '고희재' ? 'ot-badge-ko' : l.writer === '이건우' ? 'ot-badge-lee' : ''}">${escHtml(l.writer || '—')}</span>
                 <span style="font-weight:700;font-size:0.97rem">${escHtml(l.name || '(이름 없음)')}</span>
+                ${l.isReferral ? '<span style="font-size:0.72rem;font-weight:700;color:#fff;background:#f0a020;border-radius:10px;padding:2px 8px">지인소개</span>' : ''}
                 <span style="font-size:0.88rem;color:#555">${escHtml(l.phone || '')}</span>
                 <span style="font-size:0.78rem;color:#888;margin-left:auto">${l.date}</span>
               </div>
@@ -108,16 +114,17 @@ export function renderOtLog() {
     const writer = document.getElementById('ot-writer').value.trim();
     const name   = document.getElementById('ot-name').value.trim();
     const phone  = document.getElementById('ot-phone').value.trim();
-    const note   = document.getElementById('ot-note').value.trim();
+    const note      = document.getElementById('ot-note').value.trim();
+    const isReferral = document.getElementById('ot-referral').checked;
 
     if (!name) { showToast('회원이름을 입력해주세요'); return; }
 
     if (editingId) {
-      DB.otLogsUpdate(editingId, { date, writer, name, phone, note });
+      DB.otLogsUpdate(editingId, { date, writer, name, phone, note, isReferral });
       editingId = null;
       showToast('수정했습니다');
     } else {
-      DB.otLogsAdd({ date, writer, name, phone, note, isRegistered: false });
+      DB.otLogsAdd({ date, writer, name, phone, note, isReferral, isRegistered: false });
       showToast('등록했습니다');
     }
     renderOtLog();
