@@ -5,8 +5,10 @@
  *   수령액 = 본인매출(재등록 제외) + 본인개인지출×0.5 − 상대방개인지출×0.5 − 공용지출합계×0.5
  *
  * 기간 정책:
- *   2025-11 ~ 2026-04 → 통합 세션 (LEGACY_KEY) — 그 이전 이동 불가
- *   2026-05~          → 정상 월 단위
+ *   2025-11 ~ 2026-04 → 통합 세션 (PERIODS[0]) — 그 이전 이동 불가
+ *   2026-05 ~ 2026-08 → 통합 세션 (PERIODS[1])
+ *   2026-09~          → 정상 월 단위
+ *   통합 구간 추가 시 PERIODS 배열에 항목만 추가하면 됨 (FIRST_NORMAL도 갱신)
  *
  * 엑셀 업로드:
  *   SheetJS(XLSX) 사용 — 입금 열 → 매출, 출금 열 → 공용지출로 자동 분류
@@ -23,9 +25,26 @@ import { showToast, escHtml, fmtMoney } from '../utils.js';
 const GOOGLE_VISION_API_KEY = 'AIzaSyBGf8Y7Y_qnRez6PvEIfKuGE0zA8kjoLZA';
 
 // ── 상수 ──
-const LEGACY_KEY   = '2025-11~04';
-const LEGACY_LABEL = '2025년 11월 ~ 2026년 4월 (통합)';
-const FIRST_NORMAL = '2026-05';
+// 통합(합산 조회) 구간 목록 — 이 범위 안의 실제 월들은 하나의 화면으로 묶여 표시됩니다.
+// 새 통합 구간이 필요하면 배열에 항목을 추가하고 FIRST_NORMAL을 그 다음 정상 월로 옮기면 됩니다.
+const PERIODS = [
+  { key: '2025-11~04', label: '2025년 11월 ~ 2026년 4월 (통합)', start: '2025-11', end: '2026-04' },
+  { key: '2026-05~08', label: '2026년 5월 ~ 8월 (통합)',         start: '2026-05', end: '2026-08' },
+];
+const LEGACY_KEY   = PERIODS[0].key;    // 하위 호환용 별칭 (가장 이른 통합 구간)
+const FIRST_NORMAL = '2026-09';
+
+function periodForMonth(monthKey) {
+  return PERIODS.find(p => monthKey >= p.start && monthKey <= p.end) || null;
+}
+function periodIndexByKey(key) {
+  return PERIODS.findIndex(p => p.key === key);
+}
+/** 할부 분산 시 실제 저장 대상 키 (통합 구간에 속하면 구간 키, 아니면 월 키 그대로) */
+function targetKeyOf(monthKey) {
+  const p = periodForMonth(monthKey);
+  return p ? p.key : monthKey;
+}
 
 // ── 모듈 레벨 상태 ──
 let finMonth        = new Date().toISOString().slice(0, 7);
@@ -35,24 +54,30 @@ let fpIsAuto        = false;    // 개인지출 폼이 OCR로 채워졌는지
 let fiIsAuto        = false;    // 매출 폼이 OCR로 채워졌는지
 let lastExcelKey    = null;     // 중복 업로드 방지 — "파일명::크기"
 
-if (finMonth < FIRST_NORMAL) finMonth = LEGACY_KEY;
+if (finMonth < FIRST_NORMAL) {
+  const p = periodForMonth(finMonth);
+  finMonth = p ? p.key : PERIODS[0].key;
+}
 
 // ── 월 네비게이션 헬퍼 ──
 function prevMonthKey(cur) {
-  if (cur === FIRST_NORMAL) return LEGACY_KEY;
-  if (cur === LEGACY_KEY)   return null;
+  if (cur === FIRST_NORMAL) return PERIODS[PERIODS.length - 1].key;
+  const idx = periodIndexByKey(cur);
+  if (idx !== -1) return idx > 0 ? PERIODS[idx - 1].key : null;
   const d = new Date(cur + '-01');
   d.setMonth(d.getMonth() - 1);
   return d.toISOString().slice(0, 7);
 }
 function nextMonthKey(cur) {
-  if (cur === LEGACY_KEY) return FIRST_NORMAL;
+  const idx = periodIndexByKey(cur);
+  if (idx !== -1) return idx < PERIODS.length - 1 ? PERIODS[idx + 1].key : FIRST_NORMAL;
   const d = new Date(cur + '-01');
   d.setMonth(d.getMonth() + 1);
   return d.toISOString().slice(0, 7);
 }
 function monthLabel(key) {
-  if (key === LEGACY_KEY) return LEGACY_LABEL;
+  const p = PERIODS.find(p => p.key === key);
+  if (p) return p.label;
   const [y, m] = key.split('-');
   return `${y}년 ${parseInt(m)}월`;
 }
@@ -87,32 +112,38 @@ function distributeInstallment(startDate, monthlyAmt, total, base) {
     items.push({ no: i + 1, monthKey: `${y}-${mo}`, date: `${y}-${mo}-${day}` });
   }
 
-  // LEGACY: 2026-05 이전 회차는 통합 기간에 합산
-  const legacyItems = items.filter(it => it.monthKey < FIRST_NORMAL);
-  const normalItems = items.filter(it => it.monthKey >= FIRST_NORMAL);
+  // 통합 구간에 속하는 회차는 구간별로 하나로 합산, 그 외(정상 월)는 개별 저장
+  const grouped = new Map(); // targetKey -> items[]
+  items.forEach(it => {
+    const tk = targetKeyOf(it.monthKey);
+    if (!grouped.has(tk)) grouped.set(tk, []);
+    grouped.get(tk).push(it);
+  });
 
-  if (legacyItems.length > 0) {
-    DB.financeAddIncome(LEGACY_KEY, {
-      ...base,
-      date:               legacyItems[0].date,
-      amount:             legacyItems.length * monthlyAmt,
-      isInstallment:      true,
-      installTotal:       total,
-      installLegacyCount: legacyItems.length,
-      installGroupId:     groupId,
-    });
-  }
-
-  normalItems.forEach(item => {
-    DB.financeAddIncome(item.monthKey, {
-      ...base,
-      date:           item.date,
-      amount:         monthlyAmt,
-      isInstallment:  true,
-      installTotal:   total,
-      installNo:      item.no,
-      installGroupId: groupId,
-    });
+  grouped.forEach((groupItems, tk) => {
+    if (periodIndexByKey(tk) !== -1) {
+      DB.financeAddIncome(tk, {
+        ...base,
+        date:               groupItems[0].date,
+        amount:             groupItems.length * monthlyAmt,
+        isInstallment:      true,
+        installTotal:       total,
+        installLegacyCount: groupItems.length,
+        installGroupId:     groupId,
+      });
+    } else {
+      groupItems.forEach(item => {
+        DB.financeAddIncome(tk, {
+          ...base,
+          date:           item.date,
+          amount:         monthlyAmt,
+          isInstallment:  true,
+          installTotal:   total,
+          installNo:      item.no,
+          installGroupId: groupId,
+        });
+      });
+    }
   });
 
   fiIsAuto = false;
@@ -145,25 +176,10 @@ function distributeExpenseInstallment(startDate, monthlyAmt, total, base, sectio
     items.push({ no: i + 1, monthKey: `${y}-${mo}`, date: `${y}-${mo}-${day}` });
   }
 
-  const legacyItems = items.filter(it => it.monthKey < FIRST_NORMAL);
-  const normalItems = items.filter(it => it.monthKey >= FIRST_NORMAL);
-
-  // 레거시 기간 회차는 합산하지 않고 각각 LEGACY_KEY에 개별 저장
-  // → LEGACY 뷰에서 11월/12월/1월/2월/3월 회차가 각각 표시됨
-  legacyItems.forEach(item => {
-    addFn(LEGACY_KEY, {
-      ...base,
-      date:           item.date,
-      amount:         monthlyAmt,
-      isInstallment:  true,
-      installTotal:   total,
-      installNo:      item.no,
-      installGroupId: groupId,
-    });
-  });
-
-  normalItems.forEach(item => {
-    addFn(item.monthKey, {
+  // 통합 구간 회차도 합산하지 않고 각각 구간 키에 개별 저장
+  // → 통합 뷰에서 각 월의 회차가 모두 개별로 표시됨
+  items.forEach(item => {
+    addFn(targetKeyOf(item.monthKey), {
       ...base,
       date:           item.date,
       amount:         monthlyAmt,
@@ -1053,11 +1069,12 @@ function renderFinanceData() {
   document.getElementById('fin-report-month').textContent = label;
 
   // prev 버튼 비활성화
-  const prevBtn = document.getElementById('fin-prev');
+  const prevBtn  = document.getElementById('fin-prev');
+  const isEarliest = periodIndexByKey(finMonth) === 0;
   if (prevBtn) {
-    prevBtn.disabled       = (finMonth === LEGACY_KEY);
-    prevBtn.style.opacity  = (finMonth === LEGACY_KEY) ? '0.3' : '1';
-    prevBtn.style.cursor   = (finMonth === LEGACY_KEY) ? 'not-allowed' : 'pointer';
+    prevBtn.disabled       = isEarliest;
+    prevBtn.style.opacity  = isEarliest ? '0.3' : '1';
+    prevBtn.style.cursor   = isEarliest ? 'not-allowed' : 'pointer';
   }
 
   // ── 매출 테이블 ──
