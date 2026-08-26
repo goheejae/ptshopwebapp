@@ -350,111 +350,6 @@ function findCol(headers, ...keywords) {
 }
 
 /**
- * finance income 한 건의 상태에 맞춰 매출일지(salesLog) entry 를 동기화합니다.
- *
- * 자격(instructor === 'ko'|'lee' && !isMisc) 충족 시:
- *   - 연결된 sl 없으면 → 새 sl entry 를 confirmed 로 생성하고 salesLogId 역연결
- *   - 연결된 sl 있으면 → date/회원명/금액/유형/결제수단 동기화
- * 자격 미충족 시:
- *   - 연결된 sl 있으면 삭제하고 salesLogId 제거
- *
- * 결산 행 편집 → 강사 ko/lee 지정·변경, 회원명 수정, 유형 변경 시 자동 호출.
- */
-function syncSalesLogFromIncome(monthKey, incomeId) {
-  const md  = DB.financeGet(monthKey);
-  const inc = (md.incomes || []).find(r => r.id === incomeId);
-  if (!inc) return;
-
-  const eligible    = (inc.instructor === 'ko' || inc.instructor === 'lee') && !inc.isMisc;
-  const existingSl  = inc.salesLogId ? DB.salesLogsGetById(inc.salesLogId) : null;
-
-  if (eligible) {
-    if (existingSl) {
-      DB.salesLogsUpdate(inc.salesLogId, {
-        date:         inc.date,
-        month:        monthKey,
-        instructor:   inc.instructor,
-        memberName:   inc.name || '',
-        amount:       inc.amount,
-        type:         inc.isRenewal ? 'renewal' : 'new',
-        payMethod:    inc.payMethod || 'transfer',
-        linkedMonth:  monthKey,
-        linkedId:     inc.id,
-        linkedAmount: inc.amount,
-      });
-    } else {
-      const newSl = DB.salesLogsAdd({
-        date:         inc.date,
-        month:        monthKey,
-        instructor:   inc.instructor,
-        memberName:   inc.name || '',
-        amount:       inc.amount,
-        type:         inc.isRenewal ? 'renewal' : 'new',
-        payMethod:    inc.payMethod || 'transfer',
-        status:       'confirmed',
-        linkedMonth:  monthKey,
-        linkedId:     inc.id,
-        linkedAmount: inc.amount,
-        source:       'finance-sync',
-      });
-      DB.financeUpdateIncome(monthKey, inc.id, { salesLogId: newSl.id });
-    }
-  } else if (existingSl) {
-    // 자격 상실 (예: 강사 → 공용/빈칸, 또는 isMisc=true 로 변경) → sl 제거
-    DB.salesLogsDel(inc.salesLogId);
-    DB.financeUpdateIncome(monthKey, inc.id, { salesLogId: null });
-  }
-}
-
-/** finance income 삭제 시 연결된 sl entry 도 함께 삭제 */
-function syncSalesLogOnIncomeDelete(income) {
-  if (income && income.salesLogId) DB.salesLogsDel(income.salesLogId);
-}
-
-/**
- * 신규 추가된 finance income 에 대해 pending 상태의 매출일지 entry 중
- * 금액(3%)·날짜 조건을 만족하는 최적 후보를 찾습니다.
- *
- * 카드사 입금은 결제일 당일~5일 후 통장에 들어오므로
- *   bank_date - sl_date ∈ [0, +5] 일 범위 내에서만 매칭합니다.
- *   (결제일보다 이전 날짜의 입금은 별개 거래로 간주, 매칭하지 않음)
- *
- * 이름 유사성 보너스, 이미 confirmed 된 sl 은 자동 제외.
- *
- * @returns {object | null} 매칭된 salesLog entry 또는 null
- */
-function findMatchingPendingSalesLog(financeIncome) {
-  const allSL = Object.values(DB._d.salesLogs || {})
-    .filter(e => e && e.status === 'pending');
-  if (!allSL.length || !financeIncome.amount || !financeIncome.date) return null;
-
-  let best = null, bestScore = -Infinity;
-
-  for (const sl of allSL) {
-    if (!sl.amount || !sl.date) continue;
-
-    const amtRatio = Math.abs(financeIncome.amount - sl.amount) / sl.amount;
-    if (amtRatio > 0.03) continue;
-
-    // 카드 결제일(sl.date) ≤ 통장 입금일(financeIncome.date) 만 매칭 — 결제 전 입금은 별개 거래
-    const ms     = (new Date(financeIncome.date) - new Date(sl.date)) / 86400000;
-    if (isNaN(ms) || ms < 0 || ms > 5) continue;
-
-    let score = 100 - amtRatio * 500 - Math.abs(ms) * 8;
-
-    // 이미 입금된 finance.name 이 있고 sl.memberName 과 유사하면 가점
-    if (financeIncome.name && sl.memberName) {
-      const n1 = financeIncome.name.replace(/\s/g, '');
-      const n2 = sl.memberName.replace(/\s/g, '');
-      if (n1 && n2 && (n1.includes(n2) || n2.includes(n1))) score += 30;
-    }
-
-    if (score > bestScore) { best = sl; bestScore = score; }
-  }
-  return best;
-}
-
-/**
  * 통장 입금 내역의 적요·내용 텍스트가 카드사 정산금 패턴에 해당하는지 추정합니다.
  * 기본 'transfer'를 'card'로 자동 전환할 때 사용합니다.
  *
@@ -556,7 +451,7 @@ function handleExcelUpload(file) {
         ...existing.expenses.map(r => `E::${r.date}::${r.content || ''}::${r.amount}`),
       ]);
 
-      let cntIncome = 0, cntExpense = 0, cntSkip = 0, cntAutoMatch = 0;
+      let cntIncome = 0, cntExpense = 0, cntSkip = 0;
 
       rows.forEach(row => {
         const date = normalizeDate(row[dateCol]);
@@ -573,10 +468,7 @@ function handleExcelUpload(file) {
             // 카드사 정산금 패턴이면 결제수단을 'card'로 자동 전환
             const payMethod = detectCardIncome(memo, content) ? 'card' : 'transfer';
 
-            // 1) 매출일지 pending 항목 중 매칭 후보 탐색 (link 만 — finance 데이터는 sl 정보로 덮지 않음)
-            const slMatch = findMatchingPendingSalesLog({ date, amount: amt, name: '' });
-
-            const newIncome = SM.addIncome({
+            SM.addIncome({
               date, amount: amt,
               instructor: '',          // 매칭 여부와 무관 — 결산은 통장 데이터 그대로, 분류는 사용자 수동
               name:       '',
@@ -584,18 +476,7 @@ function handleExcelUpload(file) {
               memo, content,
               isRenewal:  false,
               source: 'excel', isAuto: true,
-              ...(slMatch && { salesLogId: slMatch.id }),
             });
-
-            // 3) 매출일지 entry 와 link 만 — 상태는 pending 유지 (운영자 수동 확인)
-            if (slMatch) {
-              DB.salesLogsUpdate(slMatch.id, {
-                linkedMonth:  finMonth,
-                linkedId:     newIncome.id,
-                linkedAmount: amt,
-              });
-              cntAutoMatch++;
-            }
 
             existingKeys.add(key);   // 같은 파일 내 중복도 방지
             cntIncome++;
@@ -616,14 +497,13 @@ function handleExcelUpload(file) {
       lastExcelKey = fileKey;
       renderFinanceData();
 
-      const added       = cntIncome + cntExpense;
-      const matchSuffix = cntAutoMatch > 0 ? ` · 매출일지 자동매칭 ${cntAutoMatch}건` : '';
+      const added = cntIncome + cntExpense;
       if (added === 0 && cntSkip > 0) {
         showToast(`모든 내역(${cntSkip}건)이 이미 등록되어 있습니다`);
       } else if (cntSkip > 0) {
-        showToast(`중복 ${cntSkip}건 제외 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건 추가${matchSuffix}`);
+        showToast(`중복 ${cntSkip}건 제외 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건 추가`);
       } else {
-        showToast(`업로드 완료 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건${matchSuffix}`);
+        showToast(`업로드 완료 — 매출 ${cntIncome}건 · 공용지출 ${cntExpense}건`);
       }
     } catch (err) {
       console.error('엑셀 파싱 오류:', err);
@@ -1192,13 +1072,7 @@ function renderFinanceData() {
       e.stopPropagation();
       const section = btn.dataset.section;
       const delId   = btn.dataset.id;
-      // 매출 행 삭제 전 — 연결된 sl entry 도 함께 정리하기 위해 income 객체 캐치
-      let toDelete = null;
-      if (section === 'income') {
-        toDelete = (SM.get().incomes || []).find(r => r.id === delId);
-      }
       SM.del(section, delId);
-      if (toDelete) syncSalesLogOnIncomeDelete(toDelete);
       renderFinanceData();
       showToast('삭제했습니다');
     });
@@ -1333,9 +1207,6 @@ function enterEditMode(row) {
       patch[el.name] = val;
     });
     SM.update(section, id, patch);
-
-    // 매출(income) 행 편집 시 매출일지 동기화 — 강사·회원명·유형·금액 변경 반영
-    if (section === 'income') syncSalesLogFromIncome(finMonth, id);
 
     // 할부 개인지출 결제자 변경 시 이후 회차 자동 상속
     let msg = '수정했습니다';
@@ -1560,48 +1431,18 @@ function bindFinanceEvents() {
     const inst       = document.getElementById('fi-inst').value;
     const memberName = document.getElementById('fi-name').value.trim();
 
-    // 매출일지 pending 항목 중 매칭 후보 탐색 — finance 입력값은 폼 그대로, sl 데이터는 사용 안 함
-    const slMatch = findMatchingPendingSalesLog({ date, amount, name: memberName });
-
-    const newIncome = SM.addIncome({
+    SM.addIncome({
       date, amount,
       instructor: inst,
       name:       memberName,
       payMethod,
       isRenewal:  incomeIsRenewal,
       ...(fiIsAuto && { isAuto: true }),
-      ...(slMatch && { salesLogId: slMatch.id }),
     });
-
-    if (slMatch) {
-      // 기존 매출일지 entry 와 link 만 (sl 데이터는 그대로 두고 link 정보만 동기화)
-      DB.salesLogsUpdate(slMatch.id, {
-        linkedMonth:  finMonth,
-        linkedId:     newIncome.id,
-        linkedAmount: amount,
-      });
-    } else if ((inst === 'ko' || inst === 'lee') && memberName && !fiIsAuto) {
-      // 매칭 없음 + 강사 ko/lee + 회원명 입력됨 → 매출일지에도 pending 으로 기입
-      const slEntry = DB.salesLogsAdd({
-        date,
-        month:        finMonth,
-        instructor:   inst,
-        memberName,
-        amount,
-        type:         incomeIsRenewal ? 'renewal' : 'new',
-        payMethod,
-        status:       'pending',          // 운영자가 매출일지에서 직접 클릭으로 확정
-        linkedMonth:  finMonth,
-        linkedId:     newIncome.id,
-        linkedAmount: amount,
-        source:       'finance',
-      });
-      DB.financeUpdateIncome(finMonth, newIncome.id, { salesLogId: slEntry.id });
-    }
 
     fiIsAuto  = false;
     fiAddBusy = false;
-    showToast(slMatch ? `매출일지 매칭 — ${slMatch.memberName} 추가됨` : '매출을 추가했습니다');
+    showToast('매출을 추가했습니다');
 
     document.getElementById('fi-amount').value = '';
     document.getElementById('fi-name').value   = '';

@@ -7,7 +7,7 @@ let _pendingActions = null;
 
 const ACTION_HANDLERS = {
   otLogsAdd:    data => { DB.otLogsAdd(data);                                                           return `OT일지 — ${data.name}`; },
-  salesLogsAdd: data => { DB.salesLogsAdd({ status: 'pending', ...data });                              return `매출일지 — ${data.memberName} ${(data.amount || 0).toLocaleString()}원`; },
+  salesLogsAdd: data => { DB.salesLogsAdd(data);                                                       return `매출일지 — ${data.memberName} ${(data.amount || 0).toLocaleString()}원`; },
   callLogsAdd:  data => { DB.callLogsAdd(data);                                                         return `전화일지 — ${data.name}`; },
   todosAdd:     data => { DB.todosAdd({ id: crypto.randomUUID(), done: false, createdAt: new Date().toISOString(), ...data }); return `할 일 — ${data.text}`; },
 };

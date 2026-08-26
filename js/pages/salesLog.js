@@ -1,111 +1,71 @@
 /**
  * js/pages/salesLog.js — 매출일지 모듈
  *
- * PT 세션 매출을 기록하고 은행 입금 기록과 스마트 매칭하여
- * 확정(confirmed)된 항목만 정산(finance calcSettlement)에 반영합니다.
+ * PT 세션 매출을 독립적으로 기록·관리합니다. 결산(finance.js)과 데이터를
+ * 주고받지 않는 별도 장부이며, 대기/확정 같은 상태 구분 없이 등록된 항목을
+ * 그대로 목록으로 보여줍니다.
  *
- * 정산 반영 규칙:
- *   pending  → finance income 없음 → 정산 제외
- *   confirmed 신규 → finance income(은행액 or 원금) 생성 → 정산 포함
- *   confirmed 재등록 → finance income(isRenewal=true) 생성 → calcSettlement 자동 제외
- *
- * 스마트 매칭:
- *   pending 항목 렌더 시, DB.finance 전체에서 미연결 income 중
- *   금액 3% 이내 + 날짜 5일 이내 조건을 만족하는 후보를 표시합니다.
+ * 기간 표시:
+ *   2025-11 ~ 2026-12 → 통합 구간
+ *   2027-01 ~         → 1년 단위 구간 (2027년, 2028년, …)
+ *   구간 분류는 항목의 실제 date 를 기준으로 계산합니다 — 저장된 값 자체는 바꾸지 않습니다.
  */
 
 import DB from '../db.js';
 import { showToast, escHtml, fmtMoney } from '../utils.js';
 
-// ── 상수 (finance.js 와 동일) ──
-const LEGACY_KEY   = '2025-11~04';
-const LEGACY_LABEL = '2025년 11월 ~ 2026년 4월 (통합)';
-const FIRST_NORMAL = '2026-05';
+// ── 기간 정의 ──
+const PERIODS = [
+  { key: '2025-11~2026-12', label: '2025년 11월 ~ 2026년 12월', start: '2025-11', end: '2026-12' },
+];
+const FIRST_YEARLY = 2027;   // 이 연도부터 1년 단위 구간
+
+function yearPeriod(year) {
+  return { key: String(year), label: `${year}년`, start: `${year}-01`, end: `${year}-12` };
+}
+/** 'YYYY-MM' → 해당 월이 속한 구간 객체. 통합 구간 이전 데이터도 통합 구간에 포함(catch-all). */
+function periodForMonth(monthKey) {
+  if (monthKey <= PERIODS[0].end) return PERIODS[0];
+  return yearPeriod(parseInt(monthKey.slice(0, 4), 10));
+}
+function periodByKey(key) {
+  return key === PERIODS[0].key ? PERIODS[0] : yearPeriod(parseInt(key, 10));
+}
+function prevPeriodKey(cur) {
+  if (cur === PERIODS[0].key) return null;
+  const year = parseInt(cur, 10);
+  return (year - 1 < FIRST_YEARLY) ? PERIODS[0].key : String(year - 1);
+}
+function nextPeriodKey(cur) {
+  if (cur === PERIODS[0].key) return String(FIRST_YEARLY);
+  return String(parseInt(cur, 10) + 1);
+}
+
+/** 구간에 속한 매출일지 항목을 실제 date 기준으로 골라 날짜 오름차순 반환 */
+function entriesInPeriod(periodKey) {
+  const p       = periodByKey(periodKey);
+  const isFirst = periodKey === PERIODS[0].key;
+  return Object.values(DB._d.salesLogs || {})
+    .filter(e => {
+      if (!e || !e.date) return false;
+      const mk = e.date.slice(0, 7);
+      return isFirst ? mk <= p.end : (mk >= p.start && mk <= p.end);
+    })
+    .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+}
 
 // ── 모듈 레벨 상태 ──
-let slMonth = new Date().toISOString().slice(0, 7);
-if (slMonth < FIRST_NORMAL) slMonth = LEGACY_KEY;
-let slType  = 'new';   // 입력 폼 신규/재등록
+let slPeriod = periodForMonth(new Date().toISOString().slice(0, 7)).key;
+let slType   = 'new';   // 입력 폼 신규/재등록
 
-// ── 월 네비게이션 헬퍼 ──
-function prevMonthKey(cur) {
-  if (cur === FIRST_NORMAL) return LEGACY_KEY;
-  if (cur === LEGACY_KEY)   return null;
-  const d = new Date(cur + '-01');
-  d.setMonth(d.getMonth() - 1);
-  return d.toISOString().slice(0, 7);
-}
-function nextMonthKey(cur) {
-  if (cur === LEGACY_KEY) return FIRST_NORMAL;
-  const d = new Date(cur + '-01');
-  d.setMonth(d.getMonth() + 1);
-  return d.toISOString().slice(0, 7);
-}
-function monthLabel(key) {
-  if (key === LEGACY_KEY) return LEGACY_LABEL;
-  const [y, m] = key.split('-');
-  return `${y}년 ${parseInt(m)}월`;
-}
 function todayStr() { return new Date().toISOString().slice(0, 10); }
-
-// ── 날짜 차이 (일) ──
-function dayDiff(d1, d2) {
-  return Math.abs((new Date(d1) - new Date(d2)) / 86400000);
-}
-
-// ════════════════════════════════
-// 스마트 매칭 엔진
-// ════════════════════════════════
-
-/**
- * pending 매출일지 항목에 대해 DB.finance 전체를 스캔하여
- * 연결되지 않은 income 중 금액(3%)·날짜(5일) 조건을 만족하는 최적 후보를 반환합니다.
- *
- * @returns {{ month, incomeId, income } | null}
- */
-function findBestMatch(slEntry) {
-  const finMonths = Object.keys(DB._d.finance || {});
-  let best      = null;
-  let bestScore = -Infinity;
-
-  for (const month of finMonths) {
-    const mData = DB.financeGet(month);
-    for (const inc of mData.incomes) {
-      if (inc.salesLogId) continue;           // 이미 다른 매출일지에 연결됨
-      if (!inc.amount || !inc.date) continue;
-
-      const amtRatio = Math.abs(inc.amount - slEntry.amount) / slEntry.amount;
-      if (amtRatio > 0.03) continue;          // 금액 3% 초과 제외
-
-      // 카드 결제일 < 통장 입금일 — 입금일이 결제일 이전이면 매칭 불가 (애매하면 미매칭으로 둠)
-      const dd = (new Date(inc.date) - new Date(slEntry.date)) / 86400000;
-      if (isNaN(dd) || dd < 0 || dd > 5) continue;
-
-      let score = 100 - amtRatio * 500 - dd * 8;
-
-      // 이름 유사성 보너스
-      if (inc.name && slEntry.memberName) {
-        const n1 = inc.name.replace(/\s/g, '');
-        const n2 = slEntry.memberName.replace(/\s/g, '');
-        if (n1 && n2 && (n1.includes(n2) || n2.includes(n1))) score += 30;
-      }
-
-      if (score > bestScore) {
-        bestScore = score;
-        best = { month, incomeId: inc.id, income: inc };
-      }
-    }
-  }
-  return best;
-}
 
 // ════════════════════════════════
 // 강사별 신규매출 현황 렌더
 // ════════════════════════════════
 /**
- * 매출일지 entries 에서 신규(=재등록 아닌) 항목을 강사별로 집계해
- * 확정/대기 분리하여 카드 UI 로 보여줍니다.
- * 결제수단별 분포, 회원 수(고유 회원명) 도 함께 노출.
+ * 매출일지 entries 에서 신규(=재등록 아닌) 항목을 강사별로 집계해 카드 UI 로 보여줍니다.
+ * 회원 수(고유 회원명) 도 함께 노출.
  */
 function renderSalesLogStats(entries) {
   const wrap = document.getElementById('sl-stats');
@@ -114,18 +74,10 @@ function renderSalesLogStats(entries) {
   const newOnly = entries.filter(e => e.type !== 'renewal');
 
   const calc = inst => {
-    const rows = newOnly.filter(e => e.instructor === inst);
-    const conf = rows.filter(e => e.status === 'confirmed');
-    const pend = rows.filter(e => e.status === 'pending');
-    const confAmt = conf.reduce((s, e) => s + (e.linkedAmount ?? e.amount), 0);
-    const pendAmt = pend.reduce((s, e) => s + e.amount, 0);
-    const members = new Set(rows.map(e => (e.memberName || '').trim()).filter(Boolean));
-    return {
-      confCnt: conf.length, confAmt,
-      pendCnt: pend.length, pendAmt,
-      totalCnt: rows.length, totalAmt: confAmt + pendAmt,
-      memberCnt: members.size,
-    };
+    const rows     = newOnly.filter(e => e.instructor === inst);
+    const totalAmt = rows.reduce((s, e) => s + e.amount, 0);
+    const members  = new Set(rows.map(e => (e.memberName || '').trim()).filter(Boolean));
+    return { cnt: rows.length, totalAmt, memberCnt: members.size };
   };
 
   const ko  = calc('ko');
@@ -139,17 +91,8 @@ function renderSalesLogStats(entries) {
         <span class="sl-stat-val">${s.memberCnt}명</span>
       </div>
       <div class="sl-stat-row">
-        <span class="sl-stat-label">신규매출 총합</span>
+        <span class="sl-stat-label">신규매출 총합 (${s.cnt}건)</span>
         <span class="sl-stat-val sl-stat-strong">${fmtMoney(s.totalAmt)}</span>
-      </div>
-      <div class="sl-stat-divider"></div>
-      <div class="sl-stat-row">
-        <span class="sl-stat-label" style="color:var(--success,#16a34a)">✓ 확정 ${s.confCnt}건</span>
-        <span class="sl-stat-val" style="color:var(--success,#16a34a)">${fmtMoney(s.confAmt)}</span>
-      </div>
-      <div class="sl-stat-row">
-        <span class="sl-stat-label" style="color:var(--text-muted)">⋯ 대기 ${s.pendCnt}건</span>
-        <span class="sl-stat-val" style="color:var(--text-muted)">${fmtMoney(s.pendAmt)}</span>
       </div>
     </div>
   `;
@@ -158,14 +101,10 @@ function renderSalesLogStats(entries) {
 }
 
 // ════════════════════════════════
-// 누적 신규회원 현황 — 매출일지 전체 + finance 신규 통합
+// 누적 신규회원 현황 — 매출일지 단독 집계 (전체 기간)
 // ════════════════════════════════
 /**
- * 모든 월의 매출일지(type='new') + finance.incomes(신규=isRenewal·isMisc 둘 다 false)
- * 를 합산하여 강사별 고유 회원 수 / 총 매출액 / 확정·대기 분리 통계를 만듭니다.
- *
- * 중복 방지: salesLog 와 finance.income 이 linked 된 경우엔 매출일지 쪽으로 카운트하고
- *           finance 쪽은 (salesLogId 가 있는 항목) 스킵합니다.
+ * 모든 기간의 매출일지(type='new') 항목만으로 강사별 고유 회원 수 / 총 매출액 통계를 만듭니다.
  */
 function renderCumulativeNewMembers() {
   const wrap = document.getElementById('sl-cumulative');
@@ -173,36 +112,18 @@ function renderCumulativeNewMembers() {
 
   const stats = inst => {
     const memberSet = new Set();
-    let totalAmt = 0, confCnt = 0, pendCnt = 0, confAmt = 0, pendAmt = 0;
+    let totalAmt = 0, cnt = 0;
 
-    // 매출일지 — 모든 월, 신규만
     Object.values(DB._d.salesLogs || {}).forEach(e => {
       if (!e || e.instructor !== inst) return;
       if (e.type === 'renewal') return;
       const name = (e.memberName || '').trim();
       if (name) memberSet.add(name);
-      const amt = e.status === 'confirmed' ? (e.linkedAmount ?? e.amount) : e.amount;
-      totalAmt += amt;
-      if (e.status === 'confirmed') { confCnt++; confAmt += amt; }
-      else                          { pendCnt++; pendAmt += amt; }
+      totalAmt += e.amount;
+      cnt++;
     });
 
-    // finance — 모든 월, 신규(isRenewal=false && isMisc=false). 매출일지 link 가
-    // 살아있는 경우만 sl 측에서 이미 카운트되므로 스킵 (sl 삭제된 orphan link 는 finance 쪽에서 카운트)
-    Object.keys(DB._d.finance || {}).forEach(mk => {
-      const md = DB.financeGet(mk);
-      (md.incomes || []).forEach(r => {
-        if (r.instructor !== inst) return;
-        if (r.isRenewal || r.isMisc) return;
-        if (r.salesLogId && DB.salesLogsGetById(r.salesLogId)) return;  // 살아있는 sl 만 dedup
-        const name = (r.name || '').trim();
-        if (name) memberSet.add(name);
-        totalAmt += r.amount;
-        confCnt++; confAmt += r.amount;
-      });
-    });
-
-    return { memberCnt: memberSet.size, totalAmt, confCnt, pendCnt, confAmt, pendAmt };
+    return { memberCnt: memberSet.size, totalAmt, cnt };
   };
 
   const ko  = stats('ko');
@@ -216,17 +137,8 @@ function renderCumulativeNewMembers() {
         <span class="sl-stat-val sl-stat-strong">${s.memberCnt}명</span>
       </div>
       <div class="sl-stat-row">
-        <span class="sl-stat-label">신규매출 합계</span>
+        <span class="sl-stat-label">신규매출 합계 (${s.cnt}건)</span>
         <span class="sl-stat-val sl-stat-strong">${fmtMoney(s.totalAmt)}</span>
-      </div>
-      <div class="sl-stat-divider"></div>
-      <div class="sl-stat-row">
-        <span class="sl-stat-label" style="color:var(--success,#16a34a)">✓ 확정 ${s.confCnt}건</span>
-        <span class="sl-stat-val" style="color:var(--success,#16a34a)">${fmtMoney(s.confAmt)}</span>
-      </div>
-      <div class="sl-stat-row">
-        <span class="sl-stat-label" style="color:var(--text-muted)">⋯ 대기 ${s.pendCnt}건</span>
-        <span class="sl-stat-val" style="color:var(--text-muted)">${fmtMoney(s.pendAmt)}</span>
       </div>
     </div>
   `;
@@ -241,7 +153,7 @@ export function renderSalesLog() {
   document.getElementById('page-content').innerHTML = `
     <div class="page-header"><h1>📋 매출일지</h1></div>
 
-    <!-- 월 이동 -->
+    <!-- 기간 이동 -->
     <div class="fin-nav">
       <button class="fin-nav-btn" id="sl-prev">‹</button>
       <div class="fin-month-label" id="sl-month-label"></div>
@@ -290,10 +202,10 @@ export function renderSalesLog() {
       </div>
     </div>
 
-    <!-- 강사별 신규매출 현황 (현재달) -->
+    <!-- 강사별 신규매출 현황 (현재 구간) -->
     <div class="fin-section">
       <div class="fin-section-header-row">
-        <span>📈 현재달 신규매출 현황</span>
+        <span>📈 신규매출 현황</span>
       </div>
       <div id="sl-stats"></div>
     </div>
@@ -304,10 +216,6 @@ export function renderSalesLog() {
         <span>📋 매출일지 목록</span>
         <span id="sl-summary" style="font-size:12px;color:var(--text-muted)"></span>
       </div>
-      <div class="sl-match-legend">
-        <span class="sl-legend-dot pending"></span>대기(미확정) — 정산 미반영 &nbsp;
-        <span class="sl-legend-dot confirmed"></span>확정 — 정산 반영
-      </div>
       <div class="fin-table-wrap">
         <table class="fin-table sl-table">
           <thead><tr>
@@ -317,8 +225,6 @@ export function renderSalesLog() {
             <th style="min-width:90px">원금</th>
             <th>구분</th>
             <th>결제</th>
-            <th style="min-width:96px">상태</th>
-            <th style="min-width:220px">은행 매칭 / 확정</th>
             <th></th>
           </tr></thead>
           <tbody id="sl-tbody"></tbody>
@@ -326,10 +232,10 @@ export function renderSalesLog() {
       </div>
     </div>
 
-    <!-- 누적 신규회원 현황 (매출일지 + 결산 합산, 전체 기간) -->
+    <!-- 누적 신규회원 현황 (매출일지 단독, 전체 기간) -->
     <div class="fin-section">
       <div class="fin-section-header-row">
-        <span>👥 신규회원 누적 현황 — 매출일지 + 결산 통합 (모든 기간)</span>
+        <span>👥 신규회원 누적 현황 — 매출일지 (모든 기간)</span>
       </div>
       <div id="sl-cumulative"></div>
     </div>
@@ -343,42 +249,34 @@ export function renderSalesLog() {
 // 데이터 렌더
 // ════════════════════════════════
 function renderSalesLogData() {
-  // 월 레이블 + prev 비활성화
-  document.getElementById('sl-month-label').textContent = monthLabel(slMonth);
+  // 구간 레이블 + prev 비활성화
+  document.getElementById('sl-month-label').textContent = periodByKey(slPeriod).label;
   const prevBtn = document.getElementById('sl-prev');
   if (prevBtn) {
-    prevBtn.disabled      = slMonth === LEGACY_KEY;
-    prevBtn.style.opacity = slMonth === LEGACY_KEY ? '0.3' : '1';
-    prevBtn.style.cursor  = slMonth === LEGACY_KEY ? 'not-allowed' : 'pointer';
+    const atEarliest = slPeriod === PERIODS[0].key;
+    prevBtn.disabled      = atEarliest;
+    prevBtn.style.opacity = atEarliest ? '0.3' : '1';
+    prevBtn.style.cursor  = atEarliest ? 'not-allowed' : 'pointer';
   }
 
-  // 날짜 오름차순 정렬
-  const entries = DB.salesLogsGetByMonth(slMonth)
-    .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const entries = entriesInPeriod(slPeriod);
 
   // 요약
-  const confirmedNew = entries.filter(e => e.status === 'confirmed' && e.type !== 'renewal');
-  const pendingCnt   = entries.filter(e => e.status === 'pending').length;
+  const newEntries = entries.filter(e => e.type !== 'renewal');
   const sumEl = document.getElementById('sl-summary');
   if (sumEl) {
-    const confirmedAmt = confirmedNew.reduce((s, e) => s + (e.linkedAmount ?? e.amount), 0);
-    sumEl.textContent = `확정 ${confirmedNew.length}건 ${fmtMoney(confirmedAmt)} | 대기 ${pendingCnt}건`;
+    const totalAmt = newEntries.reduce((s, e) => s + e.amount, 0);
+    sumEl.textContent = `신규 ${newEntries.length}건 ${fmtMoney(totalAmt)}`;
   }
 
-  // 강사별 신규매출 현황 — 매출일지 entries 기반 (확정·대기 모두 포함, 재등록 제외)
+  // 강사별 신규매출 현황 — 현재 구간 entries 기반 (재등록 제외)
   renderSalesLogStats(entries);
-  // 누적 신규회원 — 모든 월의 매출일지 + finance 신규 합산
+  // 누적 신규회원 — 모든 기간의 매출일지 단독 집계
   renderCumulativeNewMembers();
 
-  // pending 항목에 대해 스마트 매칭 실행
-  const matchMap = {};
-  for (const e of entries) {
-    if (e.status === 'pending') matchMap[e.id] = findBestMatch(e);
-  }
-
   document.getElementById('sl-tbody').innerHTML = entries.length === 0
-    ? '<tr class="fin-empty-row"><td colspan="9">등록된 매출일지가 없습니다</td></tr>'
-    : entries.map(e => buildRow(e, matchMap[e.id])).join('');
+    ? '<tr class="fin-empty-row"><td colspan="7">등록된 매출일지가 없습니다</td></tr>'
+    : entries.map(e => buildRow(e)).join('');
 
   bindRowEvents();
 }
@@ -386,56 +284,12 @@ function renderSalesLogData() {
 // ────────────────────────────────
 // 행 HTML 생성
 // ────────────────────────────────
-function buildRow(e, match) {
+function buildRow(e) {
   const instLabel = e.instructor === 'ko' ? '고희재' : '이건우';
   const payLabel  = { card:'카드', cash:'현금', transfer:'계좌이체' }[e.payMethod] ?? e.payMethod;
-  const isConf    = e.status === 'confirmed';
-
-  // 상태 배지 — 클릭으로 확정 ↔ 대기 토글
-  const statusCell = isConf
-    ? `<span class="sl-badge confirmed sl-status-toggle" data-id="${escHtml(e.id)}" title="클릭하여 대기로 되돌리기">✅ 확정</span>`
-    : `<span class="sl-badge pending sl-status-toggle" data-id="${escHtml(e.id)}" title="클릭하여 확정 처리">🔵 대기</span>`;
-
-  let matchCell;
-  if (isConf) {
-    const dispAmt = e.linkedAmount != null ? fmtMoney(e.linkedAmount) : fmtMoney(e.amount);
-    matchCell = `<div class="sl-confirmed-info"><span>입금 ${dispAmt}</span></div>`;
-  } else if (e.linkedId && e.linkedMonth) {
-    // 이미 자동 매칭이 걸려있는 pending — 매칭 내역 + 해제 버튼
-    const linkedInc = DB.financeGet(e.linkedMonth).incomes.find(i => i.id === e.linkedId);
-    const dispAmt   = linkedInc ? `${escHtml(linkedInc.date)}&nbsp;${fmtMoney(linkedInc.amount)}` : '(매칭 손상됨)';
-    matchCell = `
-      <div class="sl-match-box" style="background:#fff7ed;border-color:#fed7aa">
-        <span class="sl-match-hint" style="color:#9a3412" title="자동 매칭된 결산 입금">자동 매칭: ${dispAmt}</span>
-        <button class="sl-unmatch-btn" data-id="${escHtml(e.id)}"
-          style="background:#fff;border:1px solid #fb923c;color:#9a3412;padding:3px 9px;border-radius:5px;font-size:0.78rem;font-weight:600;cursor:pointer">
-          ✗ 매칭 해제
-        </button>
-      </div>`;
-  } else if (match) {
-    matchCell = `
-      <div class="sl-match-box">
-        <span class="sl-match-hint" title="은행 기록">
-          ${escHtml(match.income.date)}&nbsp;${fmtMoney(match.income.amount)}
-        </span>
-        <button class="sl-ok-btn"
-          data-id="${escHtml(e.id)}"
-          data-match-month="${escHtml(match.month)}"
-          data-match-id="${escHtml(match.incomeId)}"
-          data-match-amt="${match.income.amount}">✅ OK</button>
-      </div>`;
-  } else if (e.payMethod === 'cash') {
-    matchCell = `
-      <button class="sl-manual-btn fin-scan-btn"
-        data-id="${escHtml(e.id)}"
-        style="font-size:11px;padding:3px 10px">💵 입금 확인</button>`;
-  } else {
-    matchCell = `<span style="color:var(--text-muted);font-size:11px">은행 기록 대기 중…</span>`;
-  }
 
   return `
-    <tr class="fin-data-row sl-data-row${isConf ? ' sl-row-confirmed' : ''}"
-        data-id="${escHtml(e.id)}" title="클릭하여 수정">
+    <tr class="fin-data-row sl-data-row" data-id="${escHtml(e.id)}" title="클릭하여 수정">
       <td>${escHtml(e.date)}</td>
       <td><span class="badge-${escHtml(e.instructor)}">${instLabel}</span></td>
       <td>${escHtml(e.memberName || '—')}</td>
@@ -443,8 +297,6 @@ function buildRow(e, match) {
       <td><span class="fin-type-btn ${e.type === 'renewal' ? 'renewal' : 'new'}"
                style="pointer-events:none">${e.type === 'renewal' ? '재등록' : '신규'}</span></td>
       <td>${payLabel}</td>
-      <td>${statusCell}</td>
-      <td>${matchCell}</td>
       <td><button class="sl-del-btn fin-del" data-id="${escHtml(e.id)}">✕</button></td>
     </tr>`;
 }
@@ -453,53 +305,10 @@ function buildRow(e, match) {
 // 행 이벤트 바인딩
 // ────────────────────────────────
 function bindRowEvents() {
-  // ✅ OK — 은행 매칭 승인
-  document.querySelectorAll('.sl-ok-btn').forEach(btn => {
-    btn.addEventListener('click', () =>
-      confirmWithMatch(btn.dataset.id, btn.dataset.matchMonth, btn.dataset.matchId,
-        parseFloat(btn.dataset.matchAmt))
-    );
-  });
-
-  // 💵 수동 확정 (현금)
-  document.querySelectorAll('.sl-manual-btn').forEach(btn => {
-    btn.addEventListener('click', () => confirmManual(btn.dataset.id));
-  });
-
-  // ✗ 자동 매칭 해제 (잘못 매칭됐을 때)
-  document.querySelectorAll('.sl-unmatch-btn').forEach(btn => {
-    btn.addEventListener('click', ev => {
-      ev.stopPropagation();
-      unmatchSalesLog(btn.dataset.id);
-    });
-  });
-
-  // ↩️ 승인 취소
-  document.querySelectorAll('.sl-cancel-btn').forEach(btn => {
-    btn.addEventListener('click', () => cancelConfirm(btn.dataset.id));
-  });
-
-  // 🟢 상태 배지 클릭 — 확정 ↔ 대기 토글
-  document.querySelectorAll('.sl-status-toggle').forEach(badge => {
-    badge.addEventListener('click', ev => {
-      ev.stopPropagation();   // 행 클릭(편집 모드) 방지
-      const id = badge.dataset.id;
-      const e  = DB.salesLogsGetById(id);
-      if (!e) return;
-      if (e.status === 'confirmed') cancelConfirm(id);
-      else                          confirmManual(id);
-    });
-  });
-
   // ✕ 삭제
   document.querySelectorAll('.sl-del-btn').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      const entry = DB.salesLogsGetById(btn.dataset.id);
-      if (entry?.status === 'confirmed') {
-        showToast('확정된 항목은 먼저 승인을 취소해주세요');
-        return;
-      }
       DB.salesLogsDel(btn.dataset.id);
       renderSalesLogData();
       showToast('삭제했습니다');
@@ -516,105 +325,11 @@ function bindRowEvents() {
 }
 
 // ════════════════════════════════
-// 확정 로직
-// ════════════════════════════════
-
-/** 은행 기록 매칭으로 승인 — finance.income 의 회원명/강사/유형은 손대지 않음 (link 만 기록) */
-function confirmWithMatch(slId, matchMonth, matchIncomeId, bankAmt) {
-  const entry = DB.salesLogsGetById(slId);
-  if (!entry) return;
-
-  // finance income 에는 link 메타데이터(salesLogId)만 — 실제 데이터(이름·강사·유형)는 변경 금지
-  DB.financeUpdateIncome(matchMonth, matchIncomeId, { salesLogId: slId });
-
-  // 매출일지 확정
-  DB.salesLogsUpdate(slId, {
-    status:       'confirmed',
-    linkedMonth:  matchMonth,
-    linkedId:     matchIncomeId,
-    linkedAmount: bankAmt,
-  });
-
-  renderSalesLogData();
-  showToast(`✅ 승인 완료 — 입금액 ${fmtMoney(bankAmt)} 정산 반영`);
-}
-
-/**
- * 수동 확정 — 매출일지 status 만 'confirmed' 로 변경합니다.
- * finance.income 은 절대 새로 만들지 않음 (사용자 요구: sl → finance 데이터 흐름 차단).
- *  - 자동 매칭으로 link 가 이미 있으면 그대로 사용 (link 메타만)
- *  - link 없으면 sl 만 confirmed (결산 row 는 생성되지 않음 — 결산은 통장/엑셀로만)
- */
-function confirmManual(slId) {
-  const entry = DB.salesLogsGetById(slId);
-  if (!entry) return;
-  DB.salesLogsUpdate(slId, { status: 'confirmed' });
-  renderSalesLogData();
-  showToast(`✓ 확정 — 매출일지에만 반영 (결산 미수정)`);
-}
-
-/**
- * 잘못된 자동 매칭을 풀어 sl 을 진짜 pending 상태로 되돌립니다.
- *  - sl: linkedMonth/linkedId/linkedAmount 클리어
- *  - finance.income: salesLogId 만 제거 (회원명·강사·유형 등 데이터는 절대 변경 안 함)
- */
-function unmatchSalesLog(slId) {
-  const entry = DB.salesLogsGetById(slId);
-  if (!entry || !entry.linkedId || !entry.linkedMonth) return;
-
-  const finData   = DB.financeGet(entry.linkedMonth);
-  const linkedInc = (finData.incomes || []).find(i => i.id === entry.linkedId);
-  if (linkedInc) {
-    DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, { salesLogId: null });
-  }
-
-  DB.salesLogsUpdate(slId, {
-    linkedMonth:  null,
-    linkedId:     null,
-    linkedAmount: null,
-  });
-
-  renderSalesLogData();
-  showToast('매칭을 해제했습니다 — 다시 대기 상태');
-}
-
-/** 승인 취소 — finance 연결 해제 후 pending 복귀 */
-function cancelConfirm(slId) {
-  const entry = DB.salesLogsGetById(slId);
-  if (!entry || entry.status !== 'confirmed') return;
-
-  if (entry.linkedMonth && entry.linkedId) {
-    const finData = DB.financeGet(entry.linkedMonth);
-    const income  = finData.incomes.find(i => i.id === entry.linkedId);
-
-    if (income) {
-      if (income.source === 'saleslog') {
-        // sl 에서 신규 생성한 income → 완전 삭제 (sl 자체가 sole owner)
-        DB.financeDelIncome(entry.linkedMonth, entry.linkedId);
-      } else {
-        // 엑셀/finance 에서 만들어진 income → link 만 해제, 회원명·강사·유형은 결산 데이터 그대로 보존
-        DB.financeUpdateIncome(entry.linkedMonth, entry.linkedId, { salesLogId: null });
-      }
-    }
-  }
-
-  DB.salesLogsUpdate(slId, {
-    status:       'pending',
-    linkedMonth:  null,
-    linkedId:     null,
-    linkedAmount: null,
-  });
-
-  renderSalesLogData();
-  showToast('↩️ 승인이 취소되었습니다');
-}
-
-// ════════════════════════════════
 // 인라인 편집 모드
 // ════════════════════════════════
 function enterEditMode(row) {
-  const id    = row.dataset.id;
-  const e     = DB.salesLogsGetById(id);
+  const id = row.dataset.id;
+  const e  = DB.salesLogsGetById(id);
   if (!e) return;
 
   const s = v => escHtml(v || '');
@@ -642,7 +357,7 @@ function enterEditMode(row) {
         <option value="transfer" ${e.payMethod==='transfer'?'selected':''}>계좌이체</option>
       </select>
     </td>
-    <td colspan="3" style="white-space:nowrap">
+    <td style="white-space:nowrap">
       <button class="fin-edit-save">저장</button>
       <button class="fin-edit-cancel">취소</button>
     </td>`;
@@ -652,8 +367,9 @@ function enterEditMode(row) {
     row.querySelectorAll('[name]').forEach(el => {
       patch[el.name] = el.name === 'amount' ? (parseInt(el.value, 10) || 0) : el.value;
     });
+    // 날짜가 바뀌면 실제 소속 구간도 자동으로 바뀜(구간은 date 기준 계산) — month 필드도 함께 갱신
+    patch.month = patch.date.slice(0, 7);
     DB.salesLogsUpdate(id, patch);
-    // finance.income 으로의 데이터 동기화 제거 — sl 편집은 sl 안에서만 머무름
     renderSalesLogData();
     showToast('수정했습니다');
   });
@@ -665,15 +381,15 @@ function enterEditMode(row) {
 // 이벤트 바인딩 (폼)
 // ════════════════════════════════
 function bindSalesLogEvents() {
-  // 월 이동
+  // 구간 이동
   document.getElementById('sl-prev').addEventListener('click', () => {
-    const prev = prevMonthKey(slMonth);
+    const prev = prevPeriodKey(slPeriod);
     if (!prev) return;
-    slMonth = prev;
+    slPeriod = prev;
     renderSalesLogData();
   });
   document.getElementById('sl-next').addEventListener('click', () => {
-    slMonth = nextMonthKey(slMonth);
+    slPeriod = nextPeriodKey(slPeriod);
     renderSalesLogData();
   });
 
@@ -695,72 +411,20 @@ function bindSalesLogEvents() {
     const amount = parseInt(document.getElementById('sl-amount').value, 10) || 0;
     if (!date || !amount) { showToast('날짜와 금액을 입력하세요'); return; }
 
-    const slEntry = DB.salesLogsAdd({
-      month:        slMonth,
+    DB.salesLogsAdd({
+      month:      date.slice(0, 7),
       date,
-      instructor:   document.getElementById('sl-inst').value,
-      memberName:   document.getElementById('sl-member').value.trim(),
+      instructor: document.getElementById('sl-inst').value,
+      memberName: document.getElementById('sl-member').value.trim(),
       amount,
-      type:         slType,
-      payMethod:    document.getElementById('sl-pay').value,
-      status:       'pending',
-      linkedMonth:  null,
-      linkedId:     null,
-      linkedAmount: null,
+      type:       slType,
+      payMethod:  document.getElementById('sl-pay').value,
     });
 
-    // ── 자동 매칭: 결산에 등록된 finance.income 과 link 만 ──
-    // (finance 의 회원명·강사·유형은 절대 변경 안 함. sl 측에서만 link 정보 보유)
-    const finMatch = findUnlinkedFinanceIncome(slEntry);
-    if (finMatch) {
-      DB.financeUpdateIncome(finMatch.month, finMatch.income.id, { salesLogId: slEntry.id });
-      DB.salesLogsUpdate(slEntry.id, {
-        linkedMonth:  finMatch.month,
-        linkedId:     finMatch.income.id,
-        linkedAmount: finMatch.income.amount,
-      });
-      showToast(`결산 매출과 자동 매칭됨 (${fmtMoney(finMatch.income.amount)}) — 상태는 대기`);
-    } else {
-      showToast('매출을 등록했습니다');
-    }
+    showToast('매출을 등록했습니다');
 
     document.getElementById('sl-amount').value = '';
     document.getElementById('sl-member').value = '';
     renderSalesLogData();
   });
-}
-
-/**
- * 새로 추가된 매출일지 entry 에 대해, 이미 결산에 등록되었지만 아직 sl 과
- * 연결되지 않은 finance.income 중 금액(3%)·날짜(±5일) 조건을 만족하는 최적
- * 후보를 찾습니다. 카드사 입금 1~4일 지연을 고려해 입금일 ≥ 결제일 -1 ~ +5.
- */
-function findUnlinkedFinanceIncome(slEntry) {
-  let best = null, bestScore = -Infinity;
-  const slDate = new Date(slEntry.date);
-
-  for (const month of Object.keys(DB._d.finance || {})) {
-    const md = DB.financeGet(month);
-    for (const inc of (md.incomes || [])) {
-      if (!inc) continue;
-      if (inc.salesLogId)  continue;     // 이미 다른 sl 에 연결
-      if (inc.isMisc)      continue;     // 기타는 매출일지 대상 아님
-      if (!inc.amount || !inc.date) continue;
-
-      const amtRatio = Math.abs(inc.amount - slEntry.amount) / slEntry.amount;
-      if (amtRatio > 0.03) continue;
-      // 통장 입금일은 결제일 이후만 (이전 입금은 별개 거래로 보고 매칭 불가)
-      const days = (new Date(inc.date) - slDate) / 86400000;
-      if (isNaN(days) || days < 0 || days > 5) continue;
-
-      let score = 100 - amtRatio * 500 - Math.abs(days) * 8;
-      if (inc.name && slEntry.memberName) {
-        const n1 = inc.name.replace(/\s/g, '');
-        const n2 = slEntry.memberName.replace(/\s/g, '');
-        if (n1 && n2 && (n1.includes(n2) || n2.includes(n1))) score += 30;
-      }
-      if (score > bestScore) { best = { month, income: inc }; bestScore = score; }
-    }
-  }
-  return best;
 }
